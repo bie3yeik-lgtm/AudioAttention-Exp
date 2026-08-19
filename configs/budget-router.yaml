@@ -1,0 +1,20 @@
+version: 1
+
+defaults:
+  mode: unbounded
+  target_confidence: 0.90
+  soft_penalty_multiplier: 3.0
+
+policy:
+  require_conformal_for_hard_budget: true
+  require_promoted_conformal_for_hard_budget: true
+
+  # If all candidates violate a hard budget, do not silently launch.
+  fail_closed_if_no_candidate: true
+
+  # Optional small tolerance for floating-point / billing rounding.
+  budget_tolerance_usd: 0.01
+
+  # Soft-budget score:
+  # expected_cost + multiplier * expected/upper-bound budget excess
+  soft_budget_use_upper_bound_excess: true

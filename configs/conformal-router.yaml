@@ -1,0 +1,38 @@
+version: 1
+
+calibration:
+  min_calibration_records: 30
+  recency_days: 120
+  max_records: 10000
+
+  # Marginal coverage target.
+  coverage: 0.90
+
+  # Optional group calibration. If a group has too little data, fall back to global.
+  group_by:
+    - workload
+    - provider
+    - gpu_id
+
+  min_group_records: 10
+
+  # Conservative finite-sample quantile rule.
+  finite_sample_correction: true
+
+interval:
+  # Never allow negative dollar bounds.
+  clamp_lower_to_zero: true
+
+  # To prevent unusably huge intervals from dominating routing.
+  max_relative_half_width: 0.75
+
+registry:
+  prefix: router-models/conformal/v1
+  calibration_file: calibration.json
+  metadata_file: metadata.json
+
+promotion:
+  min_evaluation_records: 30
+  min_empirical_coverage: 0.85
+  max_empirical_coverage: 0.98
+  max_mean_relative_interval_width: 0.60

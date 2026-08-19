@@ -1,0 +1,46 @@
+name: Train Residual Calibration Model
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "29 19 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    environment: hf-evaluation
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r infra/residual_calibration/requirements.txt
+
+      - name: Train residual calibration
+        env:
+          PYTHONPATH: infra/residual_calibration
+        run: |
+          python infra/residual_calibration/train.py \
+            --bucket "$HF_BUCKET" \
+            | tee residual-calibration-report.json
+
+          {
+            echo "## Residual Calibration"
+            echo ""
+            echo '```json'
+            cat residual-calibration-report.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

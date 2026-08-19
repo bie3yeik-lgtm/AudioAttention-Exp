@@ -1,0 +1,78 @@
+name: Paired Probe Decision
+
+on:
+  workflow_dispatch:
+    inputs:
+      workload:
+        type: choice
+        required: true
+        options: [teacher, student]
+      units:
+        required: true
+        default: "0.5"
+      job_id:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  decide:
+    runs-on: ubuntu-latest
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+
+      VAST_TEACHER_GPU_QUERY: ${{ vars.VAST_TEACHER_GPU_QUERY }}
+      VAST_TEACHER_MAX_DPH: ${{ vars.VAST_TEACHER_MAX_DPH }}
+      VAST_TEACHER_DISK_GB: ${{ vars.VAST_TEACHER_DISK_GB }}
+
+      VAST_STUDENT_GPU_QUERY: ${{ vars.VAST_STUDENT_GPU_QUERY }}
+      VAST_STUDENT_MAX_DPH: ${{ vars.VAST_STUDENT_MAX_DPH }}
+      VAST_STUDENT_DISK_GB: ${{ vars.VAST_STUDENT_DISK_GB }}
+
+      RUNPOD_TEACHER_GPU_IDS: ${{ vars.RUNPOD_TEACHER_GPU_IDS }}
+      RUNPOD_TEACHER_MAX_DPH: ${{ vars.RUNPOD_TEACHER_MAX_DPH }}
+
+      RUNPOD_STUDENT_GPU_IDS: ${{ vars.RUNPOD_STUDENT_GPU_IDS }}
+      RUNPOD_STUDENT_MAX_DPH: ${{ vars.RUNPOD_STUDENT_MAX_DPH }}
+
+      RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r infra/cost_router/requirements.txt
+          pip install -r infra/historical_router/requirements.txt
+          pip install -r infra/exploration_router/requirements.txt
+          pip install --upgrade vastai
+
+      - name: Decide whether to run a paired probe
+        env:
+          PYTHONPATH: infra/historical_router
+        run: |
+          result="$(
+            python infra/exploration_router/select_paired_probe.py \
+              --workload '${{ inputs.workload }}' \
+              --units '${{ inputs.units }}' \
+              --job-id '${{ inputs.job_id }}'
+          )"
+
+          echo "$result" | jq .
+
+          {
+            echo "## Paired probe"
+            echo "- Run probe: \`$(echo "$result" | jq -r '.run_probe')\`"
+            echo "- Reason: \`$(echo "$result" | jq -r '.reason')\`"
+            echo "- Primary: \`$(echo "$result" | jq -r '.primary.provider + "/" + .primary.gpu_id')\`"
+            echo "- Secondary: \`$(echo "$result" | jq -r 'if .secondary then .secondary.provider + "/" + .secondary.gpu_id else "N/A" end')\`"
+          } >> "$GITHUB_STEP_SUMMARY"

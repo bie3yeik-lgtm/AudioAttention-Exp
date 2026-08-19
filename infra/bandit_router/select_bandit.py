@@ -17,6 +17,7 @@ from evidence import (
 )
 from prediction_source import choose_prediction_candidates
 from calibrate import calibrate_candidates
+from apply import apply_conformal
 from score import (
     bandit_score,
     candidate_key,
@@ -142,6 +143,7 @@ def main() -> None:
     )
 
     calibration_metadata = None
+    conformal_metadata = None
 
     if args.job_spec and prediction_source_name == "contextual":
         with open(args.job_spec, "r", encoding="utf-8") as f:
@@ -156,6 +158,12 @@ def main() -> None:
             workload=args.workload,
             context=context,
             accounting=accounting,
+        )
+
+        routed_candidates, conformal_metadata = apply_conformal(
+            routed_candidates,
+            bucket=args.bucket,
+            workload=args.workload,
         )
 
     # Historical greedy remains the safe baseline even when Contextual
@@ -256,6 +264,7 @@ def main() -> None:
         "prediction_source": prediction_source_name,
         "contextual_promotion_report": contextual_report,
         "residual_calibration": calibration_metadata,
+        "conformal_calibration": conformal_metadata,
 
         "selection_reason": selection_reason,
         "paired_probe_count": paired_count,

@@ -1,0 +1,65 @@
+name: HF Preprocess Job
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Immutable eval/parakeet image tag
+        required: true
+      command:
+        description: Command inside the image
+        required: true
+        default: >-
+          python /app/scripts/validate_dataset.py
+          --input /mnt/hf/derived/merged/v1/validation.parquet
+          --output /mnt/hf/results/dataset-validation.json
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  route:
+    uses: ./.github/workflows/reusable-execution-router.yml
+    with:
+      workload: preprocess
+    secrets:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+
+  launch:
+    needs: route
+    if: needs.route.outputs.provider == 'hf_jobs'
+    runs-on: ubuntu-latest
+    environment: hf-evaluation
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+      HF_NAMESPACE: ${{ vars.HF_NAMESPACE }}
+      HF_JOB_FLAVOR: ${{ needs.route.outputs.flavor }}
+      HF_JOB_COMMAND: ${{ inputs.command }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build image reference
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER}/audio-editorial-eval:${{ inputs.image_tag }}"
+          echo "HF_JOB_IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
+
+      - name: Submit HF Job
+        id: submit
+        run: |
+          job_id="$(bash infra/hf/run_generic_job.sh)"
+          echo "job_id=$job_id" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          {
+            echo "## HF preprocessing"
+            echo "- Job ID: \`${{ steps.submit.outputs.job_id }}\`"
+            echo "- Flavor: \`${HF_JOB_FLAVOR}\`"
+            echo "- Estimated hardware price: \`${{ needs.route.outputs.price }} USD/h\`"
+          } >> "$GITHUB_STEP_SUMMARY"

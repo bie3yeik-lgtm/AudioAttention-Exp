@@ -1,0 +1,46 @@
+name: Evaluate Contextual Decision
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        required: true
+      workload:
+        type: choice
+        required: true
+        options: [teacher, student]
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r infra/contextual_router/requirements.txt
+
+      - name: Evaluate completed run
+        run: |
+          python infra/contextual_router/evaluate_decision.py \
+            --bucket "$HF_BUCKET" \
+            --job-id '${{ inputs.job_id }}'
+
+      - name: Refresh promotion report
+        run: |
+          python infra/contextual_router/promotion_report.py \
+            --bucket "$HF_BUCKET" \
+            --workload '${{ inputs.workload }}' \
+            | tee report.json
+
+          cat report.json >> "$GITHUB_STEP_SUMMARY"

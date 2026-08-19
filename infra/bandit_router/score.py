@@ -90,8 +90,15 @@ def bandit_score(
         uncertainty_usd = predicted * uncertainty_fraction_value
         uncertainty_source = "historical_evidence"
 
-    exploration_bonus = beta * uncertainty_usd
-    score = max(0.0, predicted - exploration_bonus)
+    conformal_lcb = candidate.get("conformal_lcb_cost_usd")
+
+    if conformal_lcb is not None:
+        score = max(0.0, float(conformal_lcb))
+        exploration_bonus = max(0.0, predicted - score)
+        uncertainty_source = "conformal"
+    else:
+        exploration_bonus = beta * uncertainty_usd
+        score = max(0.0, predicted - exploration_bonus)
 
     return {
         **candidate,

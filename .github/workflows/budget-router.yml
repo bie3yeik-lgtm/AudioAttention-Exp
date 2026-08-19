@@ -1,0 +1,111 @@
+name: Budget-Constrained Router
+
+on:
+  workflow_dispatch:
+    inputs:
+      workload:
+        type: choice
+        required: true
+        options:
+          - teacher
+          - student
+      units:
+        required: true
+        default: "1"
+      job_id:
+        required: true
+      job_spec_path:
+        required: true
+        default: examples/job-spec.teacher.json
+      prediction_source:
+        type: choice
+        required: true
+        default: auto
+        options:
+          - auto
+          - historical
+          - contextual
+      bandit_mode:
+        type: choice
+        required: true
+        default: shadow
+        options:
+          - advisory
+          - shadow
+          - active
+
+permissions:
+  contents: read
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+
+      VAST_TEACHER_GPU_QUERY: ${{ vars.VAST_TEACHER_GPU_QUERY }}
+      VAST_TEACHER_MAX_DPH: ${{ vars.VAST_TEACHER_MAX_DPH }}
+      VAST_TEACHER_DISK_GB: ${{ vars.VAST_TEACHER_DISK_GB }}
+
+      VAST_STUDENT_GPU_QUERY: ${{ vars.VAST_STUDENT_GPU_QUERY }}
+      VAST_STUDENT_MAX_DPH: ${{ vars.VAST_STUDENT_MAX_DPH }}
+      VAST_STUDENT_DISK_GB: ${{ vars.VAST_STUDENT_DISK_GB }}
+
+      RUNPOD_TEACHER_GPU_IDS: ${{ vars.RUNPOD_TEACHER_GPU_IDS }}
+      RUNPOD_TEACHER_MAX_DPH: ${{ vars.RUNPOD_TEACHER_MAX_DPH }}
+
+      RUNPOD_STUDENT_GPU_IDS: ${{ vars.RUNPOD_STUDENT_GPU_IDS }}
+      RUNPOD_STUDENT_MAX_DPH: ${{ vars.RUNPOD_STUDENT_MAX_DPH }}
+
+      RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE }}
+      COST_ROUTER_PRICE_TOLERANCE: ${{ vars.COST_ROUTER_PRICE_TOLERANCE }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r infra/cost_router/requirements.txt
+          pip install -r infra/historical_router/requirements.txt
+          pip install -r infra/contextual_router/requirements.txt
+          pip install -r infra/residual_calibration/requirements.txt
+          pip install -r infra/conformal_router/requirements.txt
+          pip install -r infra/bandit_router/requirements.txt
+          pip install -r infra/budget_router/requirements.txt
+          pip install --upgrade vastai
+
+      - name: Budget-aware routing
+        env:
+          PYTHONPATH: infra/budget_router:infra/bandit_router:infra/historical_router:infra/contextual_router:infra/residual_calibration:infra/conformal_router
+        run: |
+          python infra/budget_router/select_budget.py \
+            --workload '${{ inputs.workload }}' \
+            --units '${{ inputs.units }}' \
+            --job-id '${{ inputs.job_id }}' \
+            --job-spec '${{ inputs.job_spec_path }}' \
+            --prediction-source '${{ inputs.prediction_source }}' \
+            --bandit-mode '${{ inputs.bandit_mode }}' \
+            > budget-decision.json
+
+          jq . budget-decision.json
+
+          {
+            echo "## Budget-Constrained Router"
+            echo ""
+            echo "- Budget mode: \`$(jq -r '.budget.mode' budget-decision.json)\`"
+            echo "- Budget: \`$(jq -r '.budget.max_cost_usd // "unbounded"' budget-decision.json) USD\`"
+            echo "- Prediction source: \`$(jq -r '.prediction_source' budget-decision.json)\`"
+            echo "- Selected: \`$(jq -r '.selected.provider + "/" + .selected.gpu_id' budget-decision.json)\`"
+            echo "- Expected cost: \`$(jq -r '.selected.budget_expected_cost_usd' budget-decision.json) USD\`"
+            echo "- Upper cost: \`$(jq -r '.selected.budget_upper_cost_usd // "N/A"' budget-decision.json) USD\`"
+            echo "- Budget reason: \`$(jq -r '.selected.budget_reason' budget-decision.json)\`"
+          } >> "$GITHUB_STEP_SUMMARY"

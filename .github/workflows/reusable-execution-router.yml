@@ -1,0 +1,123 @@
+name: Reusable Execution Router
+
+on:
+  workflow_call:
+    inputs:
+      workload:
+        type: string
+        required: true
+    outputs:
+      provider:
+        value: ${{ jobs.route.outputs.provider }}
+      price:
+        value: ${{ jobs.route.outputs.price }}
+      flavor:
+        value: ${{ jobs.route.outputs.flavor }}
+      gpu_id:
+        value: ${{ jobs.route.outputs.gpu_id }}
+      vast_offer_id:
+        value: ${{ jobs.route.outputs.vast_offer_id }}
+      runpod_gpu_id:
+        value: ${{ jobs.route.outputs.runpod_gpu_id }}
+      reason:
+        value: ${{ jobs.route.outputs.reason }}
+    secrets:
+      HF_TOKEN:
+        required: true
+      VAST_API_KEY:
+        required: true
+      RUNPOD_API_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    outputs:
+      provider: ${{ steps.route.outputs.provider }}
+      price: ${{ steps.route.outputs.price }}
+      flavor: ${{ steps.route.outputs.flavor }}
+      gpu_id: ${{ steps.route.outputs.gpu_id }}
+      vast_offer_id: ${{ steps.route.outputs.vast_offer_id }}
+      runpod_gpu_id: ${{ steps.route.outputs.runpod_gpu_id }}
+      reason: ${{ steps.route.outputs.reason }}
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+
+      HF_CPU_FLAVOR: ${{ vars.HF_CPU_FLAVOR }}
+      HF_CPU_MAX_DPH: ${{ vars.HF_CPU_MAX_DPH }}
+      HF_GOLDEN_GPU_FLAVOR: ${{ vars.HF_GOLDEN_GPU_FLAVOR }}
+      HF_GOLDEN_GPU_MAX_DPH: ${{ vars.HF_GOLDEN_GPU_MAX_DPH }}
+
+      VAST_TEACHER_GPU_QUERY: ${{ vars.VAST_TEACHER_GPU_QUERY }}
+      VAST_TEACHER_MAX_DPH: ${{ vars.VAST_TEACHER_MAX_DPH }}
+      VAST_TEACHER_DISK_GB: ${{ vars.VAST_TEACHER_DISK_GB }}
+
+      VAST_STUDENT_GPU_QUERY: ${{ vars.VAST_STUDENT_GPU_QUERY }}
+      VAST_STUDENT_MAX_DPH: ${{ vars.VAST_STUDENT_MAX_DPH }}
+      VAST_STUDENT_DISK_GB: ${{ vars.VAST_STUDENT_DISK_GB }}
+
+      RUNPOD_TEACHER_GPU_IDS: ${{ vars.RUNPOD_TEACHER_GPU_IDS }}
+      RUNPOD_TEACHER_MAX_DPH: ${{ vars.RUNPOD_TEACHER_MAX_DPH }}
+
+      RUNPOD_STUDENT_GPU_IDS: ${{ vars.RUNPOD_STUDENT_GPU_IDS }}
+      RUNPOD_STUDENT_MAX_DPH: ${{ vars.RUNPOD_STUDENT_MAX_DPH }}
+
+      RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE }}
+      COST_ROUTER_PRICE_TOLERANCE: ${{ vars.COST_ROUTER_PRICE_TOLERANCE }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install router dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r infra/cost_router/requirements.txt
+          pip install -r infra/execution_router/requirements.txt
+          pip install --upgrade vastai
+
+      - name: Route workload
+        id: route
+        shell: bash
+        run: |
+          result="$(
+            python infra/execution_router/select_execution.py \
+              --workload '${{ inputs.workload }}'
+          )"
+
+          echo "$result" | jq .
+
+          provider="$(echo "$result" | jq -r '.provider')"
+          price="$(echo "$result" | jq -r '.price_usd_per_hour')"
+          reason="$(echo "$result" | jq -r '.reason')"
+          flavor="$(echo "$result" | jq -r '.selected.flavor // .hf_jobs.flavor // empty')"
+          gpu_id="$(echo "$result" | jq -r '.selected.gpu_id // .selected.selected.gpu_id // empty')"
+          vast_offer_id="$(echo "$result" | jq -r '.gpu_router.vast.offer_id // empty')"
+          runpod_gpu_id="$(echo "$result" | jq -r '.gpu_router.runpod.gpu_id // empty')"
+
+          echo "provider=$provider" >> "$GITHUB_OUTPUT"
+          echo "price=$price" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "flavor=$flavor" >> "$GITHUB_OUTPUT"
+          echo "gpu_id=$gpu_id" >> "$GITHUB_OUTPUT"
+          echo "vast_offer_id=$vast_offer_id" >> "$GITHUB_OUTPUT"
+          echo "runpod_gpu_id=$runpod_gpu_id" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Execution Router"
+            echo ""
+            echo "- Workload: \`${{ inputs.workload }}\`"
+            echo "- Provider: \`$provider\`"
+            echo "- Price: \`$price USD/h\`"
+            echo "- Flavor/GPU: \`${flavor:-$gpu_id}\`"
+            echo "- Reason: \`$reason\`"
+          } >> "$GITHUB_STEP_SUMMARY"

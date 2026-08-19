@@ -1,0 +1,119 @@
+name: Golden Evaluation V2
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        required: true
+        options:
+          - cpu
+          - gpu
+      image_tag:
+        description: Immutable eval image tag
+        required: true
+      predictions_rel:
+        required: true
+      references_rel:
+        required: true
+        default: datasets/golden.parquet
+      output_rel:
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  route-cpu:
+    if: inputs.mode == 'cpu'
+    uses: ./.github/workflows/reusable-execution-router.yml
+    with:
+      workload: golden-cpu
+    secrets:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+
+  route-gpu:
+    if: inputs.mode == 'gpu'
+    uses: ./.github/workflows/reusable-execution-router.yml
+    with:
+      workload: golden-gpu
+    secrets:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+
+  hf-cpu:
+    if: inputs.mode == 'cpu'
+    needs: route-cpu
+    runs-on: ubuntu-latest
+    environment: hf-evaluation
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+      HF_NAMESPACE: ${{ vars.HF_NAMESPACE }}
+      HF_JOB_FLAVOR: ${{ needs.route-cpu.outputs.flavor }}
+      PREDICTIONS_REL: ${{ inputs.predictions_rel }}
+      REFERENCES_REL: ${{ inputs.references_rel }}
+      OUTPUT_REL: ${{ inputs.output_rel }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure job
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER}/audio-editorial-eval:${{ inputs.image_tag }}"
+          echo "HF_JOB_IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
+          {
+            echo 'HF_JOB_COMMAND<<EOF'
+            echo "python /app/scripts/evaluate_editorial.py --predictions /mnt/hf/$PREDICTIONS_REL --references /mnt/hf/$REFERENCES_REL --output /mnt/hf/$OUTPUT_REL"
+            echo EOF
+          } >> "$GITHUB_ENV"
+
+      - name: Submit HF CPU evaluation
+        run: bash infra/hf/run_generic_job.sh
+
+  hf-gpu:
+    if: inputs.mode == 'gpu' && needs.route-gpu.outputs.provider == 'hf_jobs'
+    needs: route-gpu
+    runs-on: ubuntu-latest
+    environment: hf-evaluation
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+      HF_NAMESPACE: ${{ vars.HF_NAMESPACE }}
+      HF_JOB_FLAVOR: ${{ needs.route-gpu.outputs.flavor }}
+      PREDICTIONS_REL: ${{ inputs.predictions_rel }}
+      REFERENCES_REL: ${{ inputs.references_rel }}
+      OUTPUT_REL: ${{ inputs.output_rel }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure job
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER}/audio-editorial-eval:${{ inputs.image_tag }}"
+          echo "HF_JOB_IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
+          {
+            echo 'HF_JOB_COMMAND<<EOF'
+            echo "python /app/scripts/evaluate_editorial.py --predictions /mnt/hf/$PREDICTIONS_REL --references /mnt/hf/$REFERENCES_REL --output /mnt/hf/$OUTPUT_REL"
+            echo EOF
+          } >> "$GITHUB_ENV"
+
+      - name: Submit HF GPU evaluation
+        run: bash infra/hf/run_generic_job.sh
+
+  external-gpu:
+    if: inputs.mode == 'gpu' && needs.route-gpu.outputs.provider != 'hf_jobs'
+    needs: route-gpu
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Explain routing
+        run: |
+          echo "Golden GPU evaluation selected ${{ needs.route-gpu.outputs.provider }} at ${{ needs.route-gpu.outputs.price }} USD/h."
+          echo "Reuse teacher/student provider launcher with the evaluation image and evaluation JOB_KIND in the next phase."

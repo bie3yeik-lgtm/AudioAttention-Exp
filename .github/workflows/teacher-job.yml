@@ -1,0 +1,131 @@
+name: Teacher GPU Job
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Immutable Step-Audio GHCR tag
+        required: true
+      audio_rel:
+        description: HF Bucket relative audio path
+        required: true
+      segments_rel:
+        description: HF Bucket relative Parakeet segments path
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: teacher-gpu
+  cancel-in-progress: false
+
+jobs:
+  route:
+    uses: ./.github/workflows/reusable-cost-router.yml
+    with:
+      profile: teacher
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+
+  launch:
+    needs: route
+    runs-on: ubuntu-latest
+    environment: gpu-auto
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      RUNPOD_REGISTRY_AUTH_ID: ${{ vars.RUNPOD_REGISTRY_AUTH_ID }}
+      RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE || 'SECURE' }}
+
+      JOB_KIND: teacher
+      RUN_ID: teacher-${{ github.run_id }}-${{ github.run_attempt }}
+      GIT_SHA: ${{ github.sha }}
+
+      AUDIO_REL: ${{ inputs.audio_rel }}
+      SEGMENTS_REL: ${{ inputs.segments_rel }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build image reference
+        shell: bash
+        run: |
+          IMAGE_REF="ghcr.io/${GITHUB_REPOSITORY_OWNER}/audio-editorial-stepaudio:${{ inputs.image_tag }}"
+          echo "IMAGE_REF=${IMAGE_REF,,}" >> "$GITHUB_ENV"
+
+      - name: Try selected Vast offer
+        id: vast
+        if: needs.route.outputs.provider == 'vast'
+        continue-on-error: true
+        shell: bash
+        env:
+          VAST_OFFER_ID: ${{ needs.route.outputs.vast_offer_id }}
+          VAST_DISK_GB: ${{ vars.VAST_TEACHER_DISK_GB || '150' }}
+        run: |
+          instance_id="$(bash infra/vast/create_job.sh)"
+          echo "instance_id=$instance_id" >> "$GITHUB_OUTPUT"
+
+      - name: Decide final launch provider
+        id: final
+        shell: bash
+        env:
+          ROUTED_PROVIDER: ${{ needs.route.outputs.provider }}
+          VAST_OUTCOME: ${{ steps.vast.outcome }}
+          RUNPOD_FALLBACK_GPU: ${{ needs.route.outputs.runpod_gpu_id }}
+        run: |
+          if [ "$ROUTED_PROVIDER" = "vast" ] && [ "$VAST_OUTCOME" = "success" ]; then
+            echo "provider=vast" >> "$GITHUB_OUTPUT"
+            echo "reason=vast_selected_and_created" >> "$GITHUB_OUTPUT"
+          elif [ -n "$RUNPOD_FALLBACK_GPU" ]; then
+            echo "provider=runpod" >> "$GITHUB_OUTPUT"
+            if [ "$ROUTED_PROVIDER" = "vast" ]; then
+              echo "reason=vast_create_race_fallback" >> "$GITHUB_OUTPUT"
+            else
+              echo "reason=runpod_selected_by_router" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "No usable Runpod fallback candidate." >&2
+            exit 1
+          fi
+
+      - name: Launch Runpod if selected or Vast race failed
+        id: runpod
+        if: steps.final.outputs.provider == 'runpod'
+        shell: bash
+        env:
+          RUNPOD_GPU_ID: ${{ needs.route.outputs.runpod_gpu_id }}
+        run: |
+          args=(
+            --image "$IMAGE_REF"
+            --name "$RUN_ID"
+            --cloud-type "$RUNPOD_CLOUD_TYPE"
+            --gpu "$RUNPOD_GPU_ID"
+            --container-disk 100
+            --volume 0
+          )
+
+          if [ -n "${RUNPOD_REGISTRY_AUTH_ID:-}" ]; then
+            args+=(--registry-auth-id "$RUNPOD_REGISTRY_AUTH_ID")
+          fi
+
+          pod_id="$(python infra/runpod/create_job.py "${args[@]}")"
+          echo "pod_id=$pod_id" >> "$GITHUB_OUTPUT"
+
+      - name: Cost summary
+        run: |
+          {
+            echo "## Teacher launch"
+            echo "- Initial router choice: \`${{ needs.route.outputs.provider }}\`"
+            echo "- Final provider: \`${{ steps.final.outputs.provider }}\`"
+            echo "- Final reason: \`${{ steps.final.outputs.reason }}\`"
+            echo "- Router selected price: \`${{ needs.route.outputs.price }} USD/h\`"
+            echo "- Vast candidate: \`${{ needs.route.outputs.vast_price || 'N/A' }} USD/h\`"
+            echo "- Runpod fallback: \`${{ needs.route.outputs.runpod_price || 'N/A' }} USD/h\`"
+            echo "- HF run path: \`hf://buckets/$HF_BUCKET/runs/$RUN_ID/\`"
+          } >> "$GITHUB_STEP_SUMMARY"

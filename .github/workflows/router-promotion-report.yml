@@ -1,0 +1,45 @@
+name: Router Promotion Report
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 18 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    strategy:
+      matrix:
+        workload: [teacher, student]
+
+    runs-on: ubuntu-latest
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r infra/shadow_router/requirements.txt
+
+      - name: Evaluate promotion
+        run: |
+          python infra/shadow_router/promotion_report.py \
+            --bucket "$HF_BUCKET" \
+            --workload '${{ matrix.workload }}' \
+            | tee report.json
+
+          {
+            echo "## ${{ matrix.workload }} router"
+            echo ""
+            echo '```json'
+            cat report.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

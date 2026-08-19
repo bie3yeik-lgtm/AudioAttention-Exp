@@ -1,0 +1,51 @@
+name: Train Contextual Cost Model
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 18 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    environment: hf-evaluation
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r infra/contextual_router/requirements.txt
+
+      - name: Train and register model
+        env:
+          PYTHONPATH: infra/contextual_router
+        run: |
+          python infra/contextual_router/train.py \
+            --bucket "$HF_BUCKET"
+
+      - name: Report latest model
+        run: |
+          python scripts/contextual_model_report.py \
+            --bucket "$HF_BUCKET" \
+            | tee contextual-model-report.json
+
+          {
+            echo "## Contextual Router model"
+            echo ""
+            echo '```json'
+            cat contextual-model-report.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

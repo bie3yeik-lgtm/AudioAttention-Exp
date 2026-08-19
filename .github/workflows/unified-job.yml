@@ -1,0 +1,212 @@
+name: Unified Cost-Aware Job
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_spec_path:
+        description: Path to job-spec JSON in the repository
+        required: true
+        default: examples/job-spec.teacher.json
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: unified-job-${{ inputs.job_spec_path }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      workload: ${{ steps.spec.outputs.workload }}
+      job_id: ${{ steps.spec.outputs.job_id }}
+      image: ${{ steps.spec.outputs.image }}
+      command: ${{ steps.spec.outputs.command }}
+      hf_bucket: ${{ steps.spec.outputs.hf_bucket }}
+      hf_namespace: ${{ steps.spec.outputs.hf_namespace }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r infra/unified_job/requirements.txt
+
+      - name: Validate Job Spec
+        id: spec
+        shell: bash
+        run: |
+          python infra/unified_job/validate_job_spec.py \
+            '${{ inputs.job_spec_path }}'
+
+          spec='${{ inputs.job_spec_path }}'
+
+          echo "workload=$(jq -r '.workload' "$spec")" >> "$GITHUB_OUTPUT"
+          echo "job_id=$(jq -r '.job_id' "$spec")" >> "$GITHUB_OUTPUT"
+          echo "image=$(jq -r '.image' "$spec")" >> "$GITHUB_OUTPUT"
+          echo "command=$(jq -r '.command' "$spec")" >> "$GITHUB_OUTPUT"
+          echo "hf_bucket=$(jq -r '.hf_bucket' "$spec")" >> "$GITHUB_OUTPUT"
+          echo "hf_namespace=$(jq -r '.hf_namespace // empty' "$spec")" >> "$GITHUB_OUTPUT"
+
+  route:
+    needs: prepare
+    uses: ./.github/workflows/reusable-execution-router.yml
+    with:
+      workload: ${{ needs.prepare.outputs.workload }}
+    secrets:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+
+  launch:
+    needs: [prepare, route]
+    runs-on: ubuntu-latest
+    environment: gpu-auto
+
+    outputs:
+      provider: ${{ steps.launch.outputs.provider }}
+      resource_id: ${{ steps.launch.outputs.resource_id }}
+      quoted_price: ${{ needs.route.outputs.price }}
+      launched_at: ${{ steps.launch.outputs.launched_at }}
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ needs.prepare.outputs.hf_bucket }}
+      HF_NAMESPACE: ${{ needs.prepare.outputs.hf_namespace }}
+
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      RUNPOD_REGISTRY_AUTH_ID: ${{ vars.RUNPOD_REGISTRY_AUTH_ID }}
+      RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE || 'SECURE' }}
+
+      RUN_ID: ${{ needs.prepare.outputs.job_id }}
+      GIT_SHA: ${{ github.sha }}
+      IMAGE_REF: ${{ needs.prepare.outputs.image }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - run: |
+          pip install -r infra/unified_job/requirements.txt
+          pip install --upgrade vastai
+
+      - name: Load runtime environment from Job Spec
+        shell: bash
+        run: |
+          spec='${{ inputs.job_spec_path }}'
+
+          for key in             JOB_KIND AUDIO_REL SEGMENTS_REL TRAIN_REL VALID_REL EPOCHS             PARAKEET_MODEL STEPAUDIO_MODEL
+          do
+            value="$(jq -r --arg key "$key" '.runtime_env[$key] // empty' "$spec")"
+            if [ -n "$value" ]; then
+              echo "$key=$value" >> "$GITHUB_ENV"
+            fi
+          done
+
+          if [ -z "${JOB_KIND:-}" ]; then
+            fallback="$(jq -r '.workload' "$spec")"
+            echo "JOB_KIND=$fallback" >> "$GITHUB_ENV"
+          fi
+
+      - name: Launch selected provider
+        id: launch
+        shell: bash
+        env:
+          SELECTED_PROVIDER: ${{ needs.route.outputs.provider }}
+          SELECTED_GPU: ${{ needs.route.outputs.gpu_id }}
+          VAST_OFFER_ID: ${{ needs.route.outputs.vast_offer_id }}
+          HF_JOB_FLAVOR: ${{ needs.route.outputs.flavor }}
+          HF_JOB_IMAGE: ${{ needs.prepare.outputs.image }}
+          HF_JOB_COMMAND: ${{ needs.prepare.outputs.command }}
+        run: |
+          launched_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "launched_at=$launched_at" >> "$GITHUB_OUTPUT"
+          echo "provider=$SELECTED_PROVIDER" >> "$GITHUB_OUTPUT"
+
+          case "$SELECTED_PROVIDER" in
+            vast)
+              resource_id="$(bash infra/vast/create_job.sh)"
+              ;;
+            runpod)
+              args=(
+                --image "$IMAGE_REF"
+                --name "$RUN_ID"
+                --cloud-type "$RUNPOD_CLOUD_TYPE"
+                --gpu "$SELECTED_GPU"
+                --container-disk 100
+                --volume 0
+              )
+              if [ -n "${RUNPOD_REGISTRY_AUTH_ID:-}" ]; then
+                args+=(--registry-auth-id "$RUNPOD_REGISTRY_AUTH_ID")
+              fi
+              resource_id="$(python infra/runpod/create_job.py "${args[@]}")"
+              ;;
+            hf_jobs)
+              resource_id="$(bash infra/hf/run_generic_job.sh)"
+              ;;
+            *)
+              echo "Unsupported provider: $SELECTED_PROVIDER" >&2
+              exit 2
+              ;;
+          esac
+
+          echo "resource_id=$resource_id" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Unified launch"
+            echo "- Provider: \`$SELECTED_PROVIDER\`"
+            echo "- Resource: \`$resource_id\`"
+            echo "- Price snapshot: \`${{ needs.route.outputs.price }} USD/h\`"
+            echo "- Job ID: \`$RUN_ID\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  monitor-account-cleanup:
+    needs: [prepare, route, launch]
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - run: |
+          pip install -r infra/unified_job/requirements.txt
+          pip install --upgrade vastai
+
+      - name: Monitor, account, and cleanup
+        working-directory: .
+        env:
+          PYTHONPATH: infra/unified_job
+        run: |
+          python infra/unified_job/watch_and_account.py \
+            --job-spec '${{ inputs.job_spec_path }}' \
+            --provider '${{ needs.launch.outputs.provider }}' \
+            --resource-id '${{ needs.launch.outputs.resource_id }}' \
+            --quoted-price '${{ needs.launch.outputs.quoted_price }}' \
+            --launched-at '${{ needs.launch.outputs.launched_at }}' \
+            --namespace '${{ needs.prepare.outputs.hf_namespace }}'
+
+      - name: Cost record location
+        if: always()
+        run: |
+          {
+            echo "## Accounting"
+            echo "- Cost record: \`hf://buckets/${{ needs.prepare.outputs.hf_bucket }}/runs/${{ needs.prepare.outputs.job_id }}/cost.json\`"
+            echo "- Lifecycle: \`hf://buckets/${{ needs.prepare.outputs.hf_bucket }}/runs/${{ needs.prepare.outputs.job_id }}/lifecycle.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -215,6 +215,45 @@
           "minimum": 0
         }
       }
+    },
+    "budget": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "unbounded",
+            "soft_budget",
+            "hard_budget"
+          ]
+        },
+        "max_cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "target_confidence": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0.5,
+          "maximum": 0.999
+        },
+        "soft_penalty_multiplier": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
     }
   }
 }

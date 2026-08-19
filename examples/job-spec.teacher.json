@@ -37,5 +37,11 @@
     "container_revision": "sha-REPLACE_ME",
     "feature_schema_revision": "context-v1",
     "teacher_prompt_tokens_estimate": null
+  },
+  "budget": {
+    "mode": "hard_budget",
+    "max_cost_usd": 1.0,
+    "target_confidence": 0.9,
+    "soft_penalty_multiplier": 3.0
   }
 }

@@ -1,0 +1,44 @@
+name: Build Conformal Calibration
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "53 19 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: hf-evaluation
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r infra/conformal_router/requirements.txt
+
+      - name: Build split-conformal calibration
+        env:
+          PYTHONPATH: infra/conformal_router
+        run: |
+          python infra/conformal_router/build_calibration.py \
+            --bucket "$HF_BUCKET" \
+            | tee conformal-calibration.json
+
+          {
+            echo "## Conformal Calibration"
+            echo ""
+            echo '```json'
+            cat conformal-calibration.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

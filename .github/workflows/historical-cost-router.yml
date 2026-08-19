@@ -1,0 +1,87 @@
+name: Historical Cost Router
+
+on:
+  workflow_dispatch:
+    inputs:
+      workload:
+        type: choice
+        required: true
+        options:
+          - teacher
+          - student
+      units:
+        description: Teacher=input audio hours, Student=epochs
+        required: true
+        default: "1"
+
+permissions:
+  contents: read
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+
+      VAST_TEACHER_GPU_QUERY: ${{ vars.VAST_TEACHER_GPU_QUERY }}
+      VAST_TEACHER_MAX_DPH: ${{ vars.VAST_TEACHER_MAX_DPH }}
+      VAST_TEACHER_DISK_GB: ${{ vars.VAST_TEACHER_DISK_GB }}
+
+      VAST_STUDENT_GPU_QUERY: ${{ vars.VAST_STUDENT_GPU_QUERY }}
+      VAST_STUDENT_MAX_DPH: ${{ vars.VAST_STUDENT_MAX_DPH }}
+      VAST_STUDENT_DISK_GB: ${{ vars.VAST_STUDENT_DISK_GB }}
+
+      RUNPOD_TEACHER_GPU_IDS: ${{ vars.RUNPOD_TEACHER_GPU_IDS }}
+      RUNPOD_TEACHER_MAX_DPH: ${{ vars.RUNPOD_TEACHER_MAX_DPH }}
+
+      RUNPOD_STUDENT_GPU_IDS: ${{ vars.RUNPOD_STUDENT_GPU_IDS }}
+      RUNPOD_STUDENT_MAX_DPH: ${{ vars.RUNPOD_STUDENT_MAX_DPH }}
+
+      RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE }}
+      COST_ROUTER_PRICE_TOLERANCE: ${{ vars.COST_ROUTER_PRICE_TOLERANCE }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r infra/cost_router/requirements.txt
+          pip install -r infra/historical_router/requirements.txt
+          pip install --upgrade vastai
+
+      - name: Predict total job cost
+        id: predict
+        shell: bash
+        env:
+          PYTHONPATH: infra/historical_router
+        run: |
+          result="$(
+            python infra/historical_router/select_historical.py \
+              --workload '${{ inputs.workload }}' \
+              --units '${{ inputs.units }}'
+          )"
+
+          echo "$result" | jq .
+
+          {
+            echo "## Historical Cost Router"
+            echo ""
+            echo "- Workload: \`${{ inputs.workload }}\`"
+            echo "- Units: \`${{ inputs.units }}\`"
+            echo "- Provider: \`$(echo "$result" | jq -r '.provider')\`"
+            echo "- GPU: \`$(echo "$result" | jq -r '.gpu_id')\`"
+            echo "- Current price: \`$(echo "$result" | jq -r '.price_usd_per_hour') USD/h\`"
+            echo "- Predicted runtime: \`$(echo "$result" | jq -r '.predicted_runtime_hours') h\`"
+            echo "- Predicted total cost: \`$(echo "$result" | jq -r '.predicted_total_cost_usd') USD\`"
+            echo "- Risk-adjusted total: \`$(echo "$result" | jq -r '.risk_adjusted_total_cost_usd') USD\`"
+            echo "- History records: \`$(echo "$result" | jq -r '.history_records_loaded')\`"
+          } >> "$GITHUB_STEP_SUMMARY"
