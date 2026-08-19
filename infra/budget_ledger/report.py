@@ -6,8 +6,8 @@ import json
 import os
 from datetime import datetime, timezone
 
-from config import load_config, resolved_limits
-from core import period_keys, scope_names, usage_for_period
+from config import load_config, resolved_limits, resolved_pacing
+from core import pacing_checks, period_keys, scope_names, usage_for_period
 from storage import load_events
 
 
@@ -22,10 +22,11 @@ def main() -> None:
 
     cfg = load_config(args.config)
     limits = resolved_limits(cfg)
+    pacing = resolved_pacing(cfg)
     events = load_events(args.bucket, cfg["storage"]["prefix"])
     periods = period_keys(datetime.now(timezone.utc), cfg["timezone"])
     scopes = ["global"] + ([f"workload:{args.workload}"] if args.workload else ["workload:teacher", "workload:student"])
-    report = {"periods": periods, "scopes": {}}
+    report = {"periods": periods, "pacing": pacing, "scopes": {}}
     for scope in scopes:
         s = {}
         for ptype, pkey in periods.items():
@@ -37,6 +38,19 @@ def main() -> None:
                 "limit_usd": cap,
                 "remaining_usd": None if cap is None else float(cap) - usage["committed_usd"],
             }
+        workload_for_scope = args.workload if args.workload else (scope.split(":", 1)[1] if scope.startswith("workload:") else "teacher")
+        pace = pacing_checks(
+            events,
+            workload=workload_for_scope,
+            amount_usd=0.0,
+            now=datetime.now(timezone.utc),
+            tz_name=cfg["timezone"],
+            limits=limits,
+            pacing=pacing,
+        )
+        matching = [x for x in pace if x["scope"] == scope]
+        if matching:
+            s["pacing"] = matching[0]
         report["scopes"][scope] = s
     print(json.dumps(report, ensure_ascii=False, indent=2))
 

@@ -1,0 +1,506 @@
+diff --git a/.github/workflows/budgeted-unified-job.yml b/.github/workflows/budgeted-unified-job.yml
+index 8c8d852..9492e54 100644
+--- a/.github/workflows/budgeted-unified-job.yml
++++ b/.github/workflows/budgeted-unified-job.yml
+@@ -161,13 +161,12 @@ jobs:
+       - name: Load runtime environment
+         run: |
+           spec='${{ inputs.job_spec_path }}'
+-          for key in JOB_KIND AUDIO_REL SEGMENTS_REL TRAIN_REL VALID_REL EPOCHS PARAKEET_MODEL STEPAUDIO_MODEL; do
++          job_kind="$(jq -r '.runtime_env.JOB_KIND // .workload' "$spec")"
++          echo "JOB_KIND=$job_kind" >> "$GITHUB_ENV"
++          for key in AUDIO_REL SEGMENTS_REL TRAIN_REL VALID_REL EPOCHS PARAKEET_MODEL STEPAUDIO_MODEL; do
+             value="$(jq -r --arg key "$key" '.runtime_env[$key] // empty' "$spec")"
+             [ -z "$value" ] || echo "$key=$value" >> "$GITHUB_ENV"
+           done
+-          if [ -z "${JOB_KIND:-}" ]; then
+-            echo "JOB_KIND=$(jq -r '.workload' "$spec")" >> "$GITHUB_ENV"
+-          fi
+       - name: Launch
+         id: launch
+         env:
+diff --git a/configs/budget-ledger.yaml b/configs/budget-ledger.yaml
+index 8a2861a..12a613b 100644
+--- a/configs/budget-ledger.yaml
++++ b/configs/budget-ledger.yaml
+@@ -10,6 +10,23 @@ reservation:
+   # Reserve the conformal upper bound when available; otherwise expected cost.
+   amount_source: upper_then_expected
+ 
++pacing:
++  enabled: true
++  mode: enforce
++  # Recompute today's allowance from the remaining monthly budget and
++  # remaining calendar days (including today). Under-spend automatically
++  # carries forward; over-spend reduces later daily allowances.
++  pace_multiplier: 1.0
++  min_daily_allowance_usd: 0.0
++  max_daily_allowance_usd: null
++
++  env_overrides:
++    enabled: GPU_BUDGET_PACING_ENABLED
++    mode: GPU_BUDGET_PACING_MODE
++    pace_multiplier: GPU_BUDGET_PACING_MULTIPLIER
++    min_daily_allowance_usd: GPU_BUDGET_PACING_MIN_DAILY_USD
++    max_daily_allowance_usd: GPU_BUDGET_PACING_MAX_DAILY_USD
++
+ limits:
+   global:
+     daily_usd: null
+diff --git a/mnt/data/AudioAttention-Exp-pacing/docs/budget-pacing.md b/docs/budget-pacing.md
+new file mode 100644
+index 0000000..aeb827b
+--- /dev/null
++++ b/docs/budget-pacing.md
+@@ -0,0 +1,78 @@
++# Budget Pacing
++
++Budget Pacing prevents a monthly GPU budget from being consumed too early in the month.
++It is enforced at reservation time, in addition to the existing daily/weekly/monthly caps.
++
++## Formula
++
++For each applicable scope (`global` and `workload:<name>`):
++
++```text
++committed_before_today = monthly_committed - today_committed
++month_available_at_day_start = monthly_limit - committed_before_today
++base_daily_allowance = month_available_at_day_start / remaining_calendar_days_including_today
++
++daily_allowance = clamp(
++  base_daily_allowance * pace_multiplier,
++  min_daily_allowance,
++  max_daily_allowance,
++)
++
++available_today = daily_allowance - today_committed
++```
++
++A reservation is admitted only when its reserved upper-cost amount fits both the normal caps and every enforced pacing check.
++
++This calculation automatically carries unused budget forward. If prior days used less than their implicit share, a later day's allowance rises. If prior days used more, later allowances fall.
++
++## Configuration
++
++```yaml
++pacing:
++  enabled: true
++  mode: enforce        # enforce | advisory
++  pace_multiplier: 1.0
++  min_daily_allowance_usd: 0.0
++  max_daily_allowance_usd: null
++```
++
++Environment overrides:
++
++```text
++GPU_BUDGET_PACING_ENABLED
++GPU_BUDGET_PACING_MODE
++GPU_BUDGET_PACING_MULTIPLIER
++GPU_BUDGET_PACING_MIN_DAILY_USD
++GPU_BUDGET_PACING_MAX_DAILY_USD
++```
++
++`advisory` calculates and reports pacing but does not reject reservations.
++
++## Example
++
++Monthly cap: $120
++Date: day 21 of a 30-day month
++Committed before today: $80
++Today committed: $1
++Remaining days including today: 10
++
++```text
++month_available_at_day_start = 120 - 80 = 40
++base_daily_allowance = 40 / 10 = 4
++available_today = 4 - 1 = 3
++```
++
++A new $2.50 reservation is admitted; a $3.50 reservation is denied in `enforce` mode.
++
++## Interaction with existing limits
++
++Pacing does not replace the monthly cap. A reservation must satisfy:
++
++```text
++global daily/weekly/monthly caps
++AND workload daily/weekly/monthly caps
++AND global monthly pacing
++AND workload monthly pacing (when configured)
++```
++
++If a scope has no monthly limit, no pacing rule is generated for that scope.
+diff --git a/docs/reservation-budget-ledger.md b/docs/reservation-budget-ledger.md
+index 48994e5..9b4f624 100644
+--- a/docs/reservation-budget-ledger.md
++++ b/docs/reservation-budget-ledger.md
+@@ -65,3 +65,8 @@ This bundle also includes stabilization work identified during repository inspec
+ - remove the duplicated `infra/infra/` tree;
+ - add Router/Ledger dependencies to CI;
+ - add unit tests for ledger accounting and workflow path checks.
++
++
++## Budget Pacing
++
++Monthly limits can now be paced across remaining calendar days. See `docs/budget-pacing.md`.
+diff --git a/infra/budget_ledger/config.py b/infra/budget_ledger/config.py
+index 0c33015..fe00bbb 100644
+--- a/infra/budget_ledger/config.py
++++ b/infra/budget_ledger/config.py
+@@ -39,3 +39,42 @@ def resolved_limits(cfg: dict[str, Any]) -> dict[str, dict[str, float | None]]:
+             envs.get("workloads", {}).get(workload, {}),
+         )
+     return out
++
++
++
++def _env_bool(name: str | None, default: bool) -> bool:
++    if not name:
++        return default
++    raw = os.environ.get(name)
++    if raw is None or not raw.strip():
++        return default
++    value = raw.strip().lower()
++    if value in {"1", "true", "yes", "on"}:
++        return True
++    if value in {"0", "false", "no", "off"}:
++        return False
++    raise ValueError(f"Invalid boolean for {name}: {raw}")
++
++
++def resolved_pacing(cfg: dict[str, Any]) -> dict[str, Any]:
++    source = cfg.get("pacing", {})
++    envs = source.get("env_overrides", {})
++
++    mode = os.environ.get(envs.get("mode", ""), source.get("mode", "enforce"))
++    if mode not in {"enforce", "advisory"}:
++        raise ValueError(f"Unsupported pacing mode: {mode}")
++
++    return {
++        "enabled": _env_bool(envs.get("enabled"), bool(source.get("enabled", True))),
++        "mode": mode,
++        "pace_multiplier": _env_float(
++            envs.get("pace_multiplier"), float(source.get("pace_multiplier", 1.0))
++        ),
++        "min_daily_allowance_usd": _env_float(
++            envs.get("min_daily_allowance_usd"),
++            float(source.get("min_daily_allowance_usd", 0.0)),
++        ),
++        "max_daily_allowance_usd": _env_float(
++            envs.get("max_daily_allowance_usd"), source.get("max_daily_allowance_usd")
++        ),
++    }
+diff --git a/infra/budget_ledger/core.py b/infra/budget_ledger/core.py
+index d0f368f..82cb5cc 100644
+--- a/infra/budget_ledger/core.py
++++ b/infra/budget_ledger/core.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ from dataclasses import dataclass
+ from datetime import datetime, timezone
++import calendar
+ from typing import Any
+ from zoneinfo import ZoneInfo
+ 
+@@ -127,3 +128,94 @@ def open_reservations(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+         if s.get("reservation") and not s.get("settlement") and not s.get("release"):
+             out.append(s["reservation"])
+     return out
++
++
++
++def pacing_checks(
++    events: list[dict[str, Any]],
++    *,
++    workload: str,
++    amount_usd: float,
++    now: datetime,
++    tz_name: str,
++    limits: dict[str, dict[str, float | None]],
++    pacing: dict[str, Any],
++) -> list[dict[str, Any]]:
++    """Compute daily pacing guards from each scope's monthly cap.
++
++    The allowance is recalculated every reservation from the budget that was
++    available at the start of the current local day:
++
++        (monthly_cap - committed_before_today) / remaining_days_in_month
++
++    This naturally carries unused budget forward. Current-day committed spend
++    is then subtracted from today's allowance.
++    """
++    if not pacing.get("enabled", True):
++        return []
++
++    local = now.astimezone(ZoneInfo(tz_name))
++    days_in_month = calendar.monthrange(local.year, local.month)[1]
++    remaining_days = days_in_month - local.day + 1
++    periods = period_keys(now, tz_name)
++    multiplier = float(pacing.get("pace_multiplier", 1.0))
++    min_daily = float(pacing.get("min_daily_allowance_usd", 0.0) or 0.0)
++    max_daily = pacing.get("max_daily_allowance_usd")
++    max_daily = None if max_daily is None else float(max_daily)
++    mode = str(pacing.get("mode", "enforce"))
++
++    checks: list[dict[str, Any]] = []
++    for scope in scope_names(workload):
++        monthly_cap = limits.get(scope, {}).get("monthly")
++        if monthly_cap is None:
++            continue
++
++        monthly = usage_for_period(
++            events,
++            period_type="monthly",
++            period_key=periods["monthly"],
++            scope=scope,
++        )
++        daily = usage_for_period(
++            events,
++            period_type="daily",
++            period_key=periods["daily"],
++            scope=scope,
++        )
++
++        committed_before_today = max(
++            0.0, monthly["committed_usd"] - daily["committed_usd"]
++        )
++        month_available_at_day_start = max(
++            0.0, float(monthly_cap) - committed_before_today
++        )
++        base_allowance = month_available_at_day_start / remaining_days
++        allowance = max(min_daily, base_allowance * multiplier)
++        if max_daily is not None:
++            allowance = min(allowance, max_daily)
++        allowance = min(allowance, month_available_at_day_start)
++        available_today = max(0.0, allowance - daily["committed_usd"])
++        would_fit = float(amount_usd) <= available_today + 1e-9
++
++        checks.append(
++            {
++                "scope": scope,
++                "mode": mode,
++                "period_key": periods["daily"],
++                "monthly_period_key": periods["monthly"],
++                "monthly_limit_usd": float(monthly_cap),
++                "remaining_days_in_month": remaining_days,
++                "monthly_committed_usd": monthly["committed_usd"],
++                "daily_committed_usd": daily["committed_usd"],
++                "committed_before_today_usd": committed_before_today,
++                "month_available_at_day_start_usd": month_available_at_day_start,
++                "base_daily_allowance_usd": base_allowance,
++                "pace_multiplier": multiplier,
++                "daily_allowance_usd": allowance,
++                "available_today_usd": available_today,
++                "requested_usd": float(amount_usd),
++                "would_fit": would_fit,
++                "allowed": would_fit if mode == "enforce" else True,
++            }
++        )
++    return checks
+diff --git a/infra/budget_ledger/report.py b/infra/budget_ledger/report.py
+index aad0ce3..edc8df9 100644
+--- a/infra/budget_ledger/report.py
++++ b/infra/budget_ledger/report.py
+@@ -6,8 +6,8 @@ import json
+ import os
+ from datetime import datetime, timezone
+ 
+-from config import load_config, resolved_limits
+-from core import period_keys, scope_names, usage_for_period
++from config import load_config, resolved_limits, resolved_pacing
++from core import pacing_checks, period_keys, scope_names, usage_for_period
+ from storage import load_events
+ 
+ 
+@@ -22,10 +22,11 @@ def main() -> None:
+ 
+     cfg = load_config(args.config)
+     limits = resolved_limits(cfg)
++    pacing = resolved_pacing(cfg)
+     events = load_events(args.bucket, cfg["storage"]["prefix"])
+     periods = period_keys(datetime.now(timezone.utc), cfg["timezone"])
+     scopes = ["global"] + ([f"workload:{args.workload}"] if args.workload else ["workload:teacher", "workload:student"])
+-    report = {"periods": periods, "scopes": {}}
++    report = {"periods": periods, "pacing": pacing, "scopes": {}}
+     for scope in scopes:
+         s = {}
+         for ptype, pkey in periods.items():
+@@ -37,6 +38,19 @@ def main() -> None:
+                 "limit_usd": cap,
+                 "remaining_usd": None if cap is None else float(cap) - usage["committed_usd"],
+             }
++        workload_for_scope = args.workload if args.workload else (scope.split(":", 1)[1] if scope.startswith("workload:") else "teacher")
++        pace = pacing_checks(
++            events,
++            workload=workload_for_scope,
++            amount_usd=0.0,
++            now=datetime.now(timezone.utc),
++            tz_name=cfg["timezone"],
++            limits=limits,
++            pacing=pacing,
++        )
++        matching = [x for x in pace if x["scope"] == scope]
++        if matching:
++            s["pacing"] = matching[0]
+         report["scopes"][scope] = s
+     print(json.dumps(report, ensure_ascii=False, indent=2))
+ 
+diff --git a/infra/budget_ledger/reserve.py b/infra/budget_ledger/reserve.py
+index defbe60..df2e762 100644
+--- a/infra/budget_ledger/reserve.py
++++ b/infra/budget_ledger/reserve.py
+@@ -6,8 +6,8 @@ import json
+ import os
+ from datetime import datetime, timezone
+ 
+-from config import load_config, resolved_limits
+-from core import check_limits, period_keys, reservation_state, scope_names
++from config import load_config, resolved_limits, resolved_pacing
++from core import check_limits, pacing_checks, period_keys, reservation_state, scope_names
+ from storage import append_event, load_events
+ 
+ 
+@@ -44,16 +44,38 @@ def main() -> None:
+ 
+     now = datetime.now(timezone.utc)
+     periods = period_keys(now, cfg["timezone"])
++    limits = resolved_limits(cfg)
++    pacing = resolved_pacing(cfg)
+     checks = check_limits(
+         events,
+         workload=args.workload,
+         amount_usd=args.amount_usd,
+         periods=periods,
+-        limits=resolved_limits(cfg),
++        limits=limits,
++    )
++    pace_checks = pacing_checks(
++        events,
++        workload=args.workload,
++        amount_usd=args.amount_usd,
++        now=now,
++        tz_name=cfg["timezone"],
++        limits=limits,
++        pacing=pacing,
+     )
+     denied = [x for x in checks if not x["allowed"]]
+-    if denied:
+-        print(json.dumps({"status": "denied", "checks": checks}, ensure_ascii=False))
++    pacing_denied = [x for x in pace_checks if not x["allowed"]]
++    if denied or pacing_denied:
++        print(
++            json.dumps(
++                {
++                    "status": "denied",
++                    "checks": checks,
++                    "pacing": pacing,
++                    "pacing_checks": pace_checks,
++                },
++                ensure_ascii=False,
++            )
++        )
+         raise SystemExit(3)
+ 
+     event = {
+@@ -69,7 +91,7 @@ def main() -> None:
+         "ttl_hours": int(cfg["reservation"]["ttl_hours"]),
+     }
+     path = append_event(args.bucket, storage_prefix, event)
+-    print(json.dumps({"status": "reserved", "path": path, "event": event, "checks": checks}, ensure_ascii=False))
++    print(json.dumps({"status": "reserved", "path": path, "event": event, "checks": checks, "pacing": pacing, "pacing_checks": pace_checks}, ensure_ascii=False))
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/tests/test_budget_ledger.py b/tests/test_budget_ledger.py
+index e8fbfaa..824b90f 100644
+--- a/tests/test_budget_ledger.py
++++ b/tests/test_budget_ledger.py
+@@ -4,7 +4,7 @@ from pathlib import Path
+ 
+ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "infra" / "budget_ledger"))
+ 
+-from core import check_limits, period_keys, reservation_state, usage_for_period
++from core import check_limits, pacing_checks, period_keys, reservation_state, usage_for_period
+ 
+ 
+ def reservation(job_id, amount, periods, workload="teacher", created="2026-08-20T00:00:00+00:00"):
+@@ -65,3 +65,62 @@ def test_period_keys_jst():
+     p = period_keys(datetime(2026, 8, 19, 16, 30, tzinfo=timezone.utc), "Asia/Tokyo")
+     assert p["daily"] == "2026-08-20"
+     assert p["monthly"] == "2026-08"
++
++
++
++def test_pacing_distributes_remaining_month_budget_over_remaining_days():
++    now = datetime(2026, 8, 20, 0, 0, tzinfo=timezone.utc)  # Aug 20 JST as well
++    periods = period_keys(now, "Asia/Tokyo")
++    events = []
++    checks = pacing_checks(
++        events,
++        workload="teacher",
++        amount_usd=1.0,
++        now=now,
++        tz_name="Asia/Tokyo",
++        limits={"global": {"monthly": 12.0}, "workload:teacher": {"monthly": None}},
++        pacing={"enabled": True, "mode": "enforce", "pace_multiplier": 1.0, "min_daily_allowance_usd": 0.0, "max_daily_allowance_usd": None},
++    )
++    # Aug 20 -> 12 calendar days including today. $12 / 12 = $1/day.
++    assert checks[0]["remaining_days_in_month"] == 12
++    assert checks[0]["daily_allowance_usd"] == 1.0
++    assert checks[0]["allowed"] is True
++
++
++def test_pacing_carries_underused_budget_forward():
++    now = datetime(2026, 8, 20, 0, 0, tzinfo=timezone.utc)
++    periods = period_keys(now, "Asia/Tokyo")
++    # Only $4 committed before today from a $16 monthly budget.
++    prior_periods = dict(periods)
++    prior_periods["daily"] = "2026-08-19"
++    events = [reservation("prior", 4.0, prior_periods)]
++    checks = pacing_checks(
++        events,
++        workload="teacher",
++        amount_usd=1.0,
++        now=now,
++        tz_name="Asia/Tokyo",
++        limits={"global": {"monthly": 16.0}, "workload:teacher": {"monthly": None}},
++        pacing={"enabled": True, "mode": "enforce", "pace_multiplier": 1.0, "min_daily_allowance_usd": 0.0, "max_daily_allowance_usd": None},
++    )
++    # ($16-$4) / 12 days = $1 available today.
++    assert checks[0]["daily_allowance_usd"] == 1.0
++    assert checks[0]["allowed"] is True
++
++
++def test_pacing_counts_today_commitment_against_allowance():
++    now = datetime(2026, 8, 20, 0, 0, tzinfo=timezone.utc)
++    periods = period_keys(now, "Asia/Tokyo")
++    events = [reservation("today", 0.75, periods)]
++    checks = pacing_checks(
++        events,
++        workload="teacher",
++        amount_usd=0.30,
++        now=now,
++        tz_name="Asia/Tokyo",
++        limits={"global": {"monthly": 12.0}, "workload:teacher": {"monthly": None}},
++        pacing={"enabled": True, "mode": "enforce", "pace_multiplier": 1.0, "min_daily_allowance_usd": 0.0, "max_daily_allowance_usd": None},
++    )
++    assert checks[0]["daily_allowance_usd"] == 1.0
++    assert abs(checks[0]["available_today_usd"] - 0.25) < 1e-9
++    assert checks[0]["allowed"] is False
+diff --git a/tests/test_workflow_paths.py b/tests/test_workflow_paths.py
+index 34c1bb1..db11d31 100644
+--- a/tests/test_workflow_paths.py
++++ b/tests/test_workflow_paths.py
+@@ -18,3 +18,11 @@ def test_requirements_paths_in_workflows_exist():
+             if not (ROOT / raw).exists():
+                 missing.append((wf.name, raw))
+     assert not missing, f"Missing requirements paths: {missing}"
++
++
++
++def test_budgeted_unified_job_resolves_job_kind_before_writing_github_env():
++    text = (ROOT / ".github/workflows/budgeted-unified-job.yml").read_text()
++    assert "job_kind=\"$(jq -r '.runtime_env.JOB_KIND // .workload'" in text
++    assert 'for key in JOB_KIND AUDIO_REL' not in text
++    assert 'if [ -z "${JOB_KIND:-}" ]' not in text

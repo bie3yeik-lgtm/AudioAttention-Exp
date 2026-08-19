@@ -39,3 +39,42 @@ def resolved_limits(cfg: dict[str, Any]) -> dict[str, dict[str, float | None]]:
             envs.get("workloads", {}).get(workload, {}),
         )
     return out
+
+
+
+def _env_bool(name: str | None, default: bool) -> bool:
+    if not name:
+        return default
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean for {name}: {raw}")
+
+
+def resolved_pacing(cfg: dict[str, Any]) -> dict[str, Any]:
+    source = cfg.get("pacing", {})
+    envs = source.get("env_overrides", {})
+
+    mode = os.environ.get(envs.get("mode", ""), source.get("mode", "enforce"))
+    if mode not in {"enforce", "advisory"}:
+        raise ValueError(f"Unsupported pacing mode: {mode}")
+
+    return {
+        "enabled": _env_bool(envs.get("enabled"), bool(source.get("enabled", True))),
+        "mode": mode,
+        "pace_multiplier": _env_float(
+            envs.get("pace_multiplier"), float(source.get("pace_multiplier", 1.0))
+        ),
+        "min_daily_allowance_usd": _env_float(
+            envs.get("min_daily_allowance_usd"),
+            float(source.get("min_daily_allowance_usd", 0.0)),
+        ),
+        "max_daily_allowance_usd": _env_float(
+            envs.get("max_daily_allowance_usd"), source.get("max_daily_allowance_usd")
+        ),
+    }

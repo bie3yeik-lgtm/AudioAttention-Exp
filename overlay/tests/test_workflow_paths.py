@@ -18,3 +18,11 @@ def test_requirements_paths_in_workflows_exist():
             if not (ROOT / raw).exists():
                 missing.append((wf.name, raw))
     assert not missing, f"Missing requirements paths: {missing}"
+
+
+
+def test_budgeted_unified_job_resolves_job_kind_before_writing_github_env():
+    text = (ROOT / ".github/workflows/budgeted-unified-job.yml").read_text()
+    assert "job_kind=\"$(jq -r '.runtime_env.JOB_KIND // .workload'" in text
+    assert 'for key in JOB_KIND AUDIO_REL' not in text
+    assert 'if [ -z "${JOB_KIND:-}" ]' not in text

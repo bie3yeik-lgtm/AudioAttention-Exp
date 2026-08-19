@@ -161,13 +161,12 @@ jobs:
       - name: Load runtime environment
         run: |
           spec='${{ inputs.job_spec_path }}'
-          for key in JOB_KIND AUDIO_REL SEGMENTS_REL TRAIN_REL VALID_REL EPOCHS PARAKEET_MODEL STEPAUDIO_MODEL; do
+          job_kind="$(jq -r '.runtime_env.JOB_KIND // .workload' "$spec")"
+          echo "JOB_KIND=$job_kind" >> "$GITHUB_ENV"
+          for key in AUDIO_REL SEGMENTS_REL TRAIN_REL VALID_REL EPOCHS PARAKEET_MODEL STEPAUDIO_MODEL; do
             value="$(jq -r --arg key "$key" '.runtime_env[$key] // empty' "$spec")"
             [ -z "$value" ] || echo "$key=$value" >> "$GITHUB_ENV"
           done
-          if [ -z "${JOB_KIND:-}" ]; then
-            echo "JOB_KIND=$(jq -r '.workload' "$spec")" >> "$GITHUB_ENV"
-          fi
       - name: Launch
         id: launch
         env:

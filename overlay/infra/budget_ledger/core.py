@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import calendar
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -127,3 +128,94 @@ def open_reservations(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if s.get("reservation") and not s.get("settlement") and not s.get("release"):
             out.append(s["reservation"])
     return out
+
+
+
+def pacing_checks(
+    events: list[dict[str, Any]],
+    *,
+    workload: str,
+    amount_usd: float,
+    now: datetime,
+    tz_name: str,
+    limits: dict[str, dict[str, float | None]],
+    pacing: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Compute daily pacing guards from each scope's monthly cap.
+
+    The allowance is recalculated every reservation from the budget that was
+    available at the start of the current local day:
+
+        (monthly_cap - committed_before_today) / remaining_days_in_month
+
+    This naturally carries unused budget forward. Current-day committed spend
+    is then subtracted from today's allowance.
+    """
+    if not pacing.get("enabled", True):
+        return []
+
+    local = now.astimezone(ZoneInfo(tz_name))
+    days_in_month = calendar.monthrange(local.year, local.month)[1]
+    remaining_days = days_in_month - local.day + 1
+    periods = period_keys(now, tz_name)
+    multiplier = float(pacing.get("pace_multiplier", 1.0))
+    min_daily = float(pacing.get("min_daily_allowance_usd", 0.0) or 0.0)
+    max_daily = pacing.get("max_daily_allowance_usd")
+    max_daily = None if max_daily is None else float(max_daily)
+    mode = str(pacing.get("mode", "enforce"))
+
+    checks: list[dict[str, Any]] = []
+    for scope in scope_names(workload):
+        monthly_cap = limits.get(scope, {}).get("monthly")
+        if monthly_cap is None:
+            continue
+
+        monthly = usage_for_period(
+            events,
+            period_type="monthly",
+            period_key=periods["monthly"],
+            scope=scope,
+        )
+        daily = usage_for_period(
+            events,
+            period_type="daily",
+            period_key=periods["daily"],
+            scope=scope,
+        )
+
+        committed_before_today = max(
+            0.0, monthly["committed_usd"] - daily["committed_usd"]
+        )
+        month_available_at_day_start = max(
+            0.0, float(monthly_cap) - committed_before_today
+        )
+        base_allowance = month_available_at_day_start / remaining_days
+        allowance = max(min_daily, base_allowance * multiplier)
+        if max_daily is not None:
+            allowance = min(allowance, max_daily)
+        allowance = min(allowance, month_available_at_day_start)
+        available_today = max(0.0, allowance - daily["committed_usd"])
+        would_fit = float(amount_usd) <= available_today + 1e-9
+
+        checks.append(
+            {
+                "scope": scope,
+                "mode": mode,
+                "period_key": periods["daily"],
+                "monthly_period_key": periods["monthly"],
+                "monthly_limit_usd": float(monthly_cap),
+                "remaining_days_in_month": remaining_days,
+                "monthly_committed_usd": monthly["committed_usd"],
+                "daily_committed_usd": daily["committed_usd"],
+                "committed_before_today_usd": committed_before_today,
+                "month_available_at_day_start_usd": month_available_at_day_start,
+                "base_daily_allowance_usd": base_allowance,
+                "pace_multiplier": multiplier,
+                "daily_allowance_usd": allowance,
+                "available_today_usd": available_today,
+                "requested_usd": float(amount_usd),
+                "would_fit": would_fit,
+                "allowed": would_fit if mode == "enforce" else True,
+            }
+        )
+    return checks

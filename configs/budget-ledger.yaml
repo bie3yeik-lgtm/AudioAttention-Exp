@@ -10,6 +10,23 @@ reservation:
   # Reserve the conformal upper bound when available; otherwise expected cost.
   amount_source: upper_then_expected
 
+pacing:
+  enabled: true
+  mode: enforce
+  # Recompute today's allowance from the remaining monthly budget and
+  # remaining calendar days (including today). Under-spend automatically
+  # carries forward; over-spend reduces later daily allowances.
+  pace_multiplier: 1.0
+  min_daily_allowance_usd: 0.0
+  max_daily_allowance_usd: null
+
+  env_overrides:
+    enabled: GPU_BUDGET_PACING_ENABLED
+    mode: GPU_BUDGET_PACING_MODE
+    pace_multiplier: GPU_BUDGET_PACING_MULTIPLIER
+    min_daily_allowance_usd: GPU_BUDGET_PACING_MIN_DAILY_USD
+    max_daily_allowance_usd: GPU_BUDGET_PACING_MAX_DAILY_USD
+
 limits:
   global:
     daily_usd: null

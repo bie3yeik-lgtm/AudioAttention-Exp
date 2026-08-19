@@ -65,3 +65,8 @@ This bundle also includes stabilization work identified during repository inspec
 - remove the duplicated `infra/infra/` tree;
 - add Router/Ledger dependencies to CI;
 - add unit tests for ledger accounting and workflow path checks.
+
+
+## Budget Pacing
+
+Monthly limits can now be paced across remaining calendar days. See `docs/budget-pacing.md`.
