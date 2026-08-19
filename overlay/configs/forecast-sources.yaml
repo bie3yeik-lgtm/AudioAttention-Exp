@@ -6,6 +6,8 @@ actions:
   statuses: [queued, requested, waiting, pending, in_progress]
   per_page: 100
   budgeted_run_name_prefix: "budgeted|"
+  # degraded keeps partial forecast; fail_closed aborts on API failure.
+  failure_mode: degraded
 
 job_specs:
   enabled: true

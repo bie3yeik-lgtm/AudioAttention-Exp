@@ -6,6 +6,9 @@ actions:
   statuses: [queued, requested, waiting, pending, in_progress]
   per_page: 100
   budgeted_run_name_prefix: "budgeted|"
+  # degraded: continue with partial demand and lower forecast health.
+  # fail_closed: abort if any Actions query fails.
+  failure_mode: degraded
 
 job_specs:
   enabled: true

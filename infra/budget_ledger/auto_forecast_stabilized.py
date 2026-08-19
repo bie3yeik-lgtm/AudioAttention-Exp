@@ -315,3 +315,25 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+def confidence_summary(
+    diagnostics: dict,
+    actions_enabled: bool,
+) -> tuple[str, str]:
+    """Summarize forecast source completeness.
+
+    This is operational health metadata, not a statistical confidence interval.
+    """
+    if not actions_enabled:
+        return "healthy", "medium"
+
+    actions = diagnostics.get("actions", {})
+    failed = int(actions.get("failed_queries", 0) or 0)
+    succeeded = int(actions.get("successful_queries", 0) or 0)
+
+    if failed == 0:
+        return "healthy", "high"
+    if succeeded > 0:
+        return "degraded", "medium"
+    return "degraded", "low"

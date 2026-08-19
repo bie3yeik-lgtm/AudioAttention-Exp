@@ -21,3 +21,6 @@ results/
 /APPLY.md
 /PATCH_NOTES.md
 /FULL_CLOUD_SOURCE.md
+/apply*.sh
+/cleanup_generated_artifacts.sh
+/budget-constrained-router.md
