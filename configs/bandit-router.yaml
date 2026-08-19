@@ -1,0 +1,45 @@
+version: 1
+
+mode:
+  # advisory: calculate recommendation only
+  # shadow: return Historical greedy route, but record Bandit recommendation
+  # active: Bandit recommendation may control paid GPU routing
+  default: shadow
+
+policy:
+  teacher:
+    exploration_strength_beta: 0.20
+    max_units_for_exploration: 2.0
+    max_predicted_extra_cost_usd: 0.20
+    max_predicted_relative_premium: 0.25
+
+  student:
+    exploration_strength_beta: 0.20
+    max_units_for_exploration: 5.0
+    max_predicted_extra_cost_usd: 0.20
+    max_predicted_relative_premium: 0.25
+
+evidence:
+  # Direct paired measurements are more valuable than ordinary historical runs.
+  paired_observation_weight: 3.0
+
+  # A candidate is considered well observed after this much effective evidence.
+  saturation_observations: 20.0
+
+  # Avoid zero uncertainty for candidates with many identical measurements.
+  minimum_uncertainty_fraction: 0.03
+
+  # Cold-start candidates receive this uncertainty fraction.
+  cold_start_uncertainty_fraction: 0.40
+
+promotion_gate:
+  # active mode can require the Historical Router promotion report to pass.
+  require_historical_promotion_for_active: true
+
+  # Number of measured paired probes required before active Bandit routing.
+  min_paired_probes_for_active:
+    teacher: 5
+    student: 5
+
+  # If active prerequisites fail, automatically fall back to shadow.
+  fail_closed_to_shadow: true
