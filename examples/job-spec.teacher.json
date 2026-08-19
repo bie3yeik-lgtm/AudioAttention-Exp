@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "job_id": "teacher-example",
+  "workload": "teacher",
+  "image": "ghcr.io/YOUR_ORG/audio-editorial-stepaudio:sha-REPLACE_ME",
+  "command": "/app/deploy/common/run_cloud_job.sh",
+  "hf_bucket": "YOUR_ORG/audio-editorial-data",
+  "timeout_seconds": 14400,
+  "metadata": {
+    "git_sha": "REPLACE_ME",
+    "job_kind": "teacher"
+  },
+  "accounting": {
+    "input_audio_hours": 1.0,
+    "epochs": null,
+    "samples": null
+  },
+  "runtime_env": {
+    "JOB_KIND": "teacher",
+    "AUDIO_REL": "raw/audio/sample.wav",
+    "SEGMENTS_REL": "derived/parakeet/v1/sample.parquet",
+    "STEPAUDIO_MODEL": "stepfun-ai/Step-Audio-2-mini"
+  }
+}

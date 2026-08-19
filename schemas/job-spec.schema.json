@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/audio-editorial/job-spec.schema.json",
+  "title": "Audio Editorial Unified Job Spec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "job_id",
+    "workload",
+    "image",
+    "command",
+    "hf_bucket"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "job_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workload": {
+      "type": "string",
+      "enum": [
+        "preprocess",
+        "validate",
+        "golden-cpu",
+        "teacher",
+        "student",
+        "golden-gpu"
+      ]
+    },
+    "image": {
+      "type": "string",
+      "minLength": 1
+    },
+    "command": {
+      "type": "string",
+      "minLength": 1
+    },
+    "hf_bucket": {
+      "type": "string",
+      "minLength": 1
+    },
+    "hf_namespace": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 60,
+      "default": 14400
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "accounting": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "input_audio_hours": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "epochs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "samples": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "runtime_env": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "integer",
+          "boolean"
+        ]
+      },
+      "description": "Environment variables passed to provider runtime."
+    }
+  }
+}

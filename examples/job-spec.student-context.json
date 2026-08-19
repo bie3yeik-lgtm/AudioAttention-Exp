@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "job_id": "student-context-example",
+  "workload": "student",
+  "image": "ghcr.io/YOUR_ORG/audio-editorial-train:sha-REPLACE_ME",
+  "command": "/app/deploy/common/run_cloud_job.sh",
+  "hf_bucket": "YOUR_ORG/audio-editorial-data",
+  "timeout_seconds": 21600,
+  "runtime_env": {
+    "JOB_KIND": "context-train",
+    "TRAIN_REL": "datasets/train.parquet",
+    "VALID_REL": "datasets/validation.parquet",
+    "EPOCHS": "10"
+  },
+  "metadata": {
+    "git_sha": "REPLACE_ME"
+  },
+  "accounting": {
+    "input_audio_hours": null,
+    "epochs": 10,
+    "samples": null
+  }
+}
