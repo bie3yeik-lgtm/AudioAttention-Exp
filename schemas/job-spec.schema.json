@@ -97,6 +97,124 @@
         ]
       },
       "description": "Environment variables passed to provider runtime."
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "audio_duration_hours": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "sample_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "dataset_size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "batch_size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "sequence_length": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "model_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dataset_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cache_state": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "cold",
+            "warm",
+            "mixed",
+            null
+          ]
+        },
+        "precision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "fp32",
+            "tf32",
+            "fp16",
+            "bf16",
+            "int8",
+            "int4",
+            "mixed",
+            null
+          ]
+        },
+        "gpu_architecture": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "framework_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "container_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "feature_schema_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "teacher_prompt_tokens_estimate": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
     }
   }
 }

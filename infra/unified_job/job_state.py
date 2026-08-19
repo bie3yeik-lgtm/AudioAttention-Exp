@@ -72,6 +72,7 @@ class CostRecord:
 
     gpu_id: str | None = None
     flavor: str | None = None
+    job_context: dict[str, Any] | None = None
 
     cost_per_input_audio_hour_usd: float | None = None
     cost_per_epoch_usd: float | None = None

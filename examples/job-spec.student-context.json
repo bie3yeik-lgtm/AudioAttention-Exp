@@ -19,5 +19,22 @@
     "input_audio_hours": null,
     "epochs": 10,
     "samples": null
+  },
+  "context": {
+    "audio_duration_hours": null,
+    "sample_count": 100000,
+    "dataset_size_bytes": null,
+    "batch_size": 32,
+    "sequence_length": 512,
+    "model_revision": "context-model-v1",
+    "prompt_revision": null,
+    "dataset_revision": "dataset-v1",
+    "cache_state": "warm",
+    "precision": "bf16",
+    "gpu_architecture": null,
+    "framework_revision": "pytorch-2.x",
+    "container_revision": "sha-REPLACE_ME",
+    "feature_schema_revision": "context-v1",
+    "teacher_prompt_tokens_estimate": null
   }
 }

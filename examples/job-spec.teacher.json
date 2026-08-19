@@ -20,5 +20,22 @@
     "AUDIO_REL": "raw/audio/sample.wav",
     "SEGMENTS_REL": "derived/parakeet/v1/sample.parquet",
     "STEPAUDIO_MODEL": "stepfun-ai/Step-Audio-2-mini"
+  },
+  "context": {
+    "audio_duration_hours": 1.0,
+    "sample_count": null,
+    "dataset_size_bytes": null,
+    "batch_size": 1,
+    "sequence_length": null,
+    "model_revision": "stepfun-ai/Step-Audio-2-mini",
+    "prompt_revision": "teacher-v1",
+    "dataset_revision": "dataset-v1",
+    "cache_state": "cold",
+    "precision": "bf16",
+    "gpu_architecture": null,
+    "framework_revision": "transformers-4.x",
+    "container_revision": "sha-REPLACE_ME",
+    "feature_schema_revision": "context-v1",
+    "teacher_prompt_tokens_estimate": null
   }
 }

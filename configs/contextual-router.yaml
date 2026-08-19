@@ -1,0 +1,51 @@
+version: 1
+
+dataset:
+  recency_days: 120
+  max_records: 10000
+  min_records_to_train: 30
+  validation_fraction: 0.20
+
+features:
+  categorical:
+    - workload
+    - provider
+    - gpu_id
+    - model_revision
+    - prompt_revision
+    - dataset_revision
+    - cache_state
+    - precision
+    - gpu_architecture
+    - framework_revision
+    - container_revision
+    - feature_schema_revision
+
+  numerical:
+    - quoted_price_usd_per_hour
+    - provider_reported_price_usd_per_hour
+    - input_audio_hours
+    - epochs
+    - samples
+    - audio_duration_hours
+    - sample_count
+    - dataset_size_bytes
+    - batch_size
+    - sequence_length
+    - teacher_prompt_tokens_estimate
+
+training:
+  random_seed: 42
+  iterations: 500
+  depth: 7
+  learning_rate: 0.05
+  l2_leaf_reg: 5.0
+  loss_function_runtime: RMSE
+  loss_function_cost: RMSE
+  early_stopping_rounds: 50
+
+registry:
+  prefix: router-models/contextual/v1
+  metadata_file: metadata.json
+  runtime_model_file: runtime.cbm
+  cost_model_file: cost.cbm
