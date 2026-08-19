@@ -1,0 +1,65 @@
+version: 1
+
+dataset:
+  min_evaluations: 30
+  recency_days: 120
+  max_records: 10000
+  validation_fraction: 0.20
+
+features:
+  categorical:
+    - workload
+    - provider
+    - gpu_id
+    - model_revision
+    - prompt_revision
+    - dataset_revision
+    - cache_state
+    - precision
+    - gpu_architecture
+    - framework_revision
+    - container_revision
+    - feature_schema_revision
+
+  numerical:
+    - predicted_cost_usd
+    - predicted_runtime_seconds
+    - quoted_price_usd_per_hour
+    - input_audio_hours
+    - epochs
+    - samples
+    - audio_duration_hours
+    - sample_count
+    - dataset_size_bytes
+    - batch_size
+    - sequence_length
+
+training:
+  random_seed: 42
+  iterations: 400
+  depth: 6
+  learning_rate: 0.05
+  l2_leaf_reg: 5.0
+  early_stopping_rounds: 40
+
+targets:
+  # Predict absolute percentage error (APE) for cost and runtime.
+  cost_ape: contextual_cost_ape
+  runtime_ape: contextual_runtime_ape
+
+registry:
+  prefix: router-models/residual-calibration/v1
+  cost_error_model_file: cost_ape.cbm
+  runtime_error_model_file: runtime_ape.cbm
+  metadata_file: metadata.json
+
+confidence:
+  # Used when residual model is unavailable or not promoted.
+  fallback_uncertainty_fraction: 0.25
+
+  # Floor/ceiling on calibrated uncertainty.
+  min_uncertainty_fraction: 0.03
+  max_uncertainty_fraction: 0.50
+
+  # Inflate predicted APE to become a conservative confidence radius.
+  safety_multiplier: 1.50

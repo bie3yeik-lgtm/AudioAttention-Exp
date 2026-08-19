@@ -72,7 +72,24 @@ def bandit_score(
     Lower score wins.
     """
     predicted = float(candidate["risk_adjusted_total_cost_usd"])
-    uncertainty_usd = predicted * uncertainty_fraction_value
+
+    calibrated_uncertainty_usd = candidate.get(
+        "calibrated_uncertainty_usd"
+    )
+
+    if calibrated_uncertainty_usd is not None:
+        uncertainty_usd = float(calibrated_uncertainty_usd)
+        uncertainty_fraction_value = (
+            uncertainty_usd / predicted if predicted > 0 else 0.0
+        )
+        uncertainty_source = candidate.get(
+            "calibration_source",
+            "calibrated",
+        )
+    else:
+        uncertainty_usd = predicted * uncertainty_fraction_value
+        uncertainty_source = "historical_evidence"
+
     exploration_bonus = beta * uncertainty_usd
     score = max(0.0, predicted - exploration_bonus)
 
@@ -80,6 +97,7 @@ def bandit_score(
         **candidate,
         "bandit_uncertainty_fraction": uncertainty_fraction_value,
         "bandit_uncertainty_usd": uncertainty_usd,
+        "bandit_uncertainty_source": uncertainty_source,
         "bandit_exploration_bonus_usd": exploration_bonus,
         "bandit_lcb_score_usd": score,
     }

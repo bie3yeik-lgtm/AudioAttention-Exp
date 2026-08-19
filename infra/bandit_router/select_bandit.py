@@ -16,6 +16,7 @@ from evidence import (
     read_promotion_report,
 )
 from prediction_source import choose_prediction_candidates
+from calibrate import calibrate_candidates
 from score import (
     bandit_score,
     candidate_key,
@@ -140,6 +141,23 @@ def main() -> None:
         )
     )
 
+    calibration_metadata = None
+
+    if args.job_spec and prediction_source_name == "contextual":
+        with open(args.job_spec, "r", encoding="utf-8") as f:
+            job_spec_obj = json.load(f)
+
+        context = job_spec_obj.get("context") or {}
+        accounting = job_spec_obj.get("accounting") or {}
+
+        routed_candidates, calibration_metadata = calibrate_candidates(
+            routed_candidates,
+            bucket=args.bucket,
+            workload=args.workload,
+            context=context,
+            accounting=accounting,
+        )
+
     # Historical greedy remains the safe baseline even when Contextual
     # predictions are promoted and used for Bandit ranking.
     greedy = historical["selected"]
@@ -237,6 +255,7 @@ def main() -> None:
 
         "prediction_source": prediction_source_name,
         "contextual_promotion_report": contextual_report,
+        "residual_calibration": calibration_metadata,
 
         "selection_reason": selection_reason,
         "paired_probe_count": paired_count,

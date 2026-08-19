@@ -138,7 +138,6 @@ def main() -> None:
 
     result = {
         "schema_version": "1.0",
-        "job_id": spec.get("job_id"),
         "workload": args.workload,
         "units": args.units,
         "mode": args.mode,
