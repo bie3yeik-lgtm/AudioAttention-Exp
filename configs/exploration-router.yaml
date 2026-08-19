@@ -1,0 +1,40 @@
+version: 1
+
+policy:
+  enabled: true
+
+  # Percentage of otherwise-safe jobs routed to a non-greedy candidate.
+  epsilon:
+    teacher: 0.05
+    student: 0.05
+
+  # Exploration is disabled for large/expensive jobs.
+  max_units:
+    teacher: 2.0
+    student: 5.0
+
+  # Alternative route must not be wildly more expensive than the greedy route.
+  max_predicted_extra_cost_usd: 0.20
+  max_predicted_relative_premium: 0.25
+
+  # Prefer candidates with less history when exploring.
+  underexplored_history_target: 10
+
+  # Deterministic hash-based assignment makes a job reproducible.
+  deterministic_assignment: true
+
+paired_probe:
+  enabled: true
+
+  # Only tiny benchmark jobs should be duplicated.
+  max_units:
+    teacher: 0.50
+    student: 1.0
+
+  # Hard cap on predicted additional cost of the second route.
+  max_extra_cost_usd: 0.35
+
+  # Paired probes should be rare.
+  probability:
+    teacher: 0.02
+    student: 0.02
