@@ -70,6 +70,9 @@ class CostRecord:
     epochs: int | None = None
     samples: int | None = None
 
+    gpu_id: str | None = None
+    flavor: str | None = None
+
     cost_per_input_audio_hour_usd: float | None = None
     cost_per_epoch_usd: float | None = None
     cost_per_1k_samples_usd: float | None = None

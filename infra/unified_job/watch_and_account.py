@@ -151,6 +151,10 @@ def main() -> None:
         input_audio_hours=audio_hours,
         epochs=epochs,
         samples=samples,
+        gpu_id=(last_status or {}).get("raw", {}).get("gpu", {}).get("id")
+            if args.provider == "runpod" else None,
+        flavor=(last_status or {}).get("flavor")
+            if args.provider == "hf_jobs" else None,
         cost_per_input_audio_hour_usd=(
             estimated_cost / audio_hours
             if audio_hours not in (None, 0)

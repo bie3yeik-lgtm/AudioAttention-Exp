@@ -1,0 +1,2 @@
+PyYAML>=6,<7
+huggingface_hub>=1.8.0

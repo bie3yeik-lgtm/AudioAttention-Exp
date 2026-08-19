@@ -1,0 +1,24 @@
+version: 1
+
+history:
+  min_samples_per_candidate: 3
+  max_records: 5000
+  recency_days: 90
+
+prediction:
+  shrinkage_prior_weight: 3.0
+  uncertainty_penalty: 0.15
+  cold_start_runtime_multiplier: 1.25
+
+objectives:
+  teacher:
+    unit: input_audio_hour
+    fallback_runtime_hours_per_unit: 0.40
+
+  student:
+    unit: epoch
+    fallback_runtime_hours_per_unit: 0.25
+
+  golden-gpu:
+    unit: job
+    fallback_runtime_hours_per_unit: 0.50
