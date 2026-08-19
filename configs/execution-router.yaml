@@ -1,0 +1,46 @@
+version: 1
+
+defaults:
+  hf_namespace: null
+  hf_cpu_flavor: cpu-upgrade
+  hf_cpu_max_dph: 0.05
+  hf_gpu_golden_flavor: l40sx1
+  hf_gpu_golden_max_dph: 2.00
+
+workloads:
+  preprocess:
+    class: cpu
+    providers:
+      - hf_jobs
+
+  validate:
+    class: cpu
+    providers:
+      - hf_jobs
+
+  golden-cpu:
+    class: cpu
+    providers:
+      - hf_jobs
+
+  teacher:
+    class: gpu
+    cost_profile: teacher
+    providers:
+      - vast
+      - runpod
+
+  student:
+    class: gpu
+    cost_profile: student
+    providers:
+      - vast
+      - runpod
+
+  golden-gpu:
+    class: gpu
+    cost_profile: teacher
+    providers:
+      - vast
+      - runpod
+      - hf_jobs
