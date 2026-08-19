@@ -15,6 +15,7 @@ from evidence import (
     load_paired_evidence,
     read_promotion_report,
 )
+from prediction_source import choose_prediction_candidates
 from score import (
     bandit_score,
     candidate_key,
@@ -89,6 +90,12 @@ def main() -> None:
     p.add_argument("--workload", choices=["teacher", "student"], required=True)
     p.add_argument("--units", type=float, required=True)
     p.add_argument("--job-id", required=True)
+    p.add_argument("--job-spec")
+    p.add_argument(
+        "--prediction-source",
+        choices=["auto", "historical", "contextual"],
+        default="auto",
+    )
     p.add_argument("--bucket", default=os.environ.get("HF_BUCKET"))
     p.add_argument(
         "--mode",
@@ -121,12 +128,27 @@ def main() -> None:
     )
 
     historical = call_historical(args.workload, args.units)
+
+    routed_candidates, prediction_source_name, contextual_report = (
+        choose_prediction_candidates(
+            workload=args.workload,
+            bucket=args.bucket,
+            historical_result=historical,
+            units=args.units,
+            job_spec=args.job_spec,
+            requested_source=args.prediction_source,
+        )
+    )
+
+    # Historical greedy remains the safe baseline even when Contextual
+    # predictions are promoted and used for Bandit ranking.
     greedy = historical["selected"]
+
     paired = load_paired_evidence(args.bucket, workload=args.workload)
 
     scored: list[dict[str, Any]] = []
 
-    for raw in historical["candidates"]:
+    for raw in routed_candidates:
         key = candidate_key(raw)
 
         frac, saturation = uncertainty_fraction(
@@ -212,6 +234,9 @@ def main() -> None:
         "historical_greedy": greedy,
         "bandit_recommendation": recommendation,
         "selected": selected,
+
+        "prediction_source": prediction_source_name,
+        "contextual_promotion_report": contextual_report,
 
         "selection_reason": selection_reason,
         "paired_probe_count": paired_count,

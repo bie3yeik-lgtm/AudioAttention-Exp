@@ -21,10 +21,10 @@ def main() -> None:
     fs = HfFileSystem(token=os.environ.get("HF_TOKEN"))
     path = (
         f"hf://buckets/{args.bucket}/runs/"
-        f"{args.job_id}/bandit-decision.json"
+        f"{args.job_id}/contextual-decision.json"
     )
-
     fs.makedirs(path.rsplit("/", 1)[0], exist_ok=True)
+
     with fs.open(path, "w") as f:
         json.dump(obj, f, ensure_ascii=False, indent=2)
 
