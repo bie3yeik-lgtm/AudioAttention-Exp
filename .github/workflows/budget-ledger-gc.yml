@@ -1,0 +1,29 @@
+name: Budget Ledger GC
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: budget-ledger-${{ vars.HF_BUCKET }}
+  cancel-in-progress: false
+
+jobs:
+  release-stale:
+    runs-on: ubuntu-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install -r infra/budget_ledger/requirements.txt
+      - env:
+          PYTHONPATH: infra/budget_ledger
+        run: python infra/budget_ledger/gc.py --bucket "$HF_BUCKET"

@@ -1,0 +1,41 @@
+version: 1
+
+timezone: Asia/Tokyo
+
+storage:
+  prefix: budget-ledger/v1
+
+reservation:
+  ttl_hours: 12
+  # Reserve the conformal upper bound when available; otherwise expected cost.
+  amount_source: upper_then_expected
+
+limits:
+  global:
+    daily_usd: null
+    weekly_usd: null
+    monthly_usd: null
+  workloads:
+    teacher:
+      daily_usd: null
+      weekly_usd: null
+      monthly_usd: null
+    student:
+      daily_usd: null
+      weekly_usd: null
+      monthly_usd: null
+
+env_overrides:
+  global:
+    daily_usd: GPU_BUDGET_GLOBAL_DAILY_USD
+    weekly_usd: GPU_BUDGET_GLOBAL_WEEKLY_USD
+    monthly_usd: GPU_BUDGET_GLOBAL_MONTHLY_USD
+  workloads:
+    teacher:
+      daily_usd: GPU_BUDGET_TEACHER_DAILY_USD
+      weekly_usd: GPU_BUDGET_TEACHER_WEEKLY_USD
+      monthly_usd: GPU_BUDGET_TEACHER_MONTHLY_USD
+    student:
+      daily_usd: GPU_BUDGET_STUDENT_DAILY_USD
+      weekly_usd: GPU_BUDGET_STUDENT_WEEKLY_USD
+      monthly_usd: GPU_BUDGET_STUDENT_MONTHLY_USD

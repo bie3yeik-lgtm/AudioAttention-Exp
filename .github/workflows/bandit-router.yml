@@ -80,7 +80,7 @@ jobs:
           pip install -r infra/historical_router/requirements.txt
           pip install -r infra/bandit_router/requirements.txt
           pip install -r infra/contextual_router/requirements.txt
-          pip install -r infra/residual_calibration:infra/conformal_router/requirements.txt
+          pip install -r infra/residual_calibration/requirements.txt
           pip install -r infra/conformal_router/requirements.txt
           pip install --upgrade vastai
 
