@@ -26,3 +26,12 @@ def test_budgeted_unified_job_resolves_job_kind_before_writing_github_env():
     assert "job_kind=\"$(jq -r '.runtime_env.JOB_KIND // .workload'" in text
     assert 'for key in JOB_KIND AUDIO_REL' not in text
     assert 'if [ -z "${JOB_KIND:-}" ]' not in text
+
+
+
+def test_budget_forecast_workflow_requirements_exist():
+    path = ROOT / ".github/workflows/budget-forecast-report.yml"
+    assert path.exists()
+    text = path.read_text()
+    assert "infra/budget_ledger/requirements.txt" in text
+    assert "forecast_report.py" in text

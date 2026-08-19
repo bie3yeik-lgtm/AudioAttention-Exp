@@ -1,0 +1,58 @@
+name: Budget Forecast Report
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "43 20 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    strategy:
+      matrix:
+        workload: [teacher, student]
+
+    runs-on: ubuntu-latest
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+
+      GPU_BUDGET_GLOBAL_MONTHLY_USD: ${{ vars.GPU_BUDGET_GLOBAL_MONTHLY_USD }}
+      GPU_BUDGET_TEACHER_MONTHLY_USD: ${{ vars.GPU_BUDGET_TEACHER_MONTHLY_USD }}
+      GPU_BUDGET_STUDENT_MONTHLY_USD: ${{ vars.GPU_BUDGET_STUDENT_MONTHLY_USD }}
+
+      GPU_BUDGET_PACING_ENABLED: ${{ vars.GPU_BUDGET_PACING_ENABLED }}
+      GPU_BUDGET_PACING_MODE: ${{ vars.GPU_BUDGET_PACING_MODE }}
+      GPU_BUDGET_PACING_MULTIPLIER: ${{ vars.GPU_BUDGET_PACING_MULTIPLIER }}
+
+      GPU_BUDGET_FORECAST_ENABLED: ${{ vars.GPU_BUDGET_FORECAST_ENABLED }}
+      GPU_BUDGET_FORECAST_FILE: ${{ vars.GPU_BUDGET_FORECAST_FILE }}
+      GPU_BUDGET_FORECAST_LOOKBACK_DAYS: ${{ vars.GPU_BUDGET_FORECAST_LOOKBACK_DAYS }}
+      GPU_BUDGET_FORECAST_BASELINE_WEIGHT: ${{ vars.GPU_BUDGET_FORECAST_BASELINE_WEIGHT }}
+      GPU_BUDGET_FORECAST_WEEKDAY_WEIGHT: ${{ vars.GPU_BUDGET_FORECAST_WEEKDAY_WEIGHT }}
+      GPU_BUDGET_FORECAST_SCHEDULE_WEIGHT: ${{ vars.GPU_BUDGET_FORECAST_SCHEDULE_WEIGHT }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r infra/budget_ledger/requirements.txt
+
+      - name: Forecast-aware pacing report
+        env:
+          PYTHONPATH: infra/budget_ledger
+        run: |
+          python infra/budget_ledger/forecast_report.py             --bucket "$HF_BUCKET"             --workload '${{ matrix.workload }}'             | tee forecast.json
+
+          {
+            echo "## Forecast-aware Budget Pacing — ${{ matrix.workload }}"
+            echo '```json'
+            cat forecast.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

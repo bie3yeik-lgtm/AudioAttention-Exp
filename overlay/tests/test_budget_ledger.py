@@ -4,7 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "infra" / "budget_ledger"))
 
-from core import check_limits, pacing_checks, period_keys, reservation_state, usage_for_period
+from core import check_limits, forecast_aware_pacing_checks, pacing_checks, period_keys, reservation_state, usage_for_period
+from forecast import weekday_factors
 
 
 def reservation(job_id, amount, periods, workload="teacher", created="2026-08-20T00:00:00+00:00"):
@@ -124,3 +125,93 @@ def test_pacing_counts_today_commitment_against_allowance():
     assert checks[0]["daily_allowance_usd"] == 1.0
     assert abs(checks[0]["available_today_usd"] - 0.25) < 1e-9
     assert checks[0]["allowed"] is False
+
+
+
+def test_weekday_factors_prefer_high_demand_weekday():
+    from datetime import date
+
+    demand = {
+        date(2026, 8, 3): 4.0,   # Monday
+        date(2026, 8, 10): 4.0,  # Monday
+        date(2026, 8, 4): 1.0,   # Tuesday
+        date(2026, 8, 11): 1.0,  # Tuesday
+    }
+    factors = weekday_factors(demand, smoothing_days=0.0)
+    assert factors[0] > factors[1]
+
+
+def test_forecast_aware_pacing_reserves_more_for_scheduled_day():
+    now = datetime(2026, 8, 20, 0, 0, tzinfo=timezone.utc)
+    limits = {
+        "global": {"monthly": 12.0},
+        "workload:teacher": {"monthly": None},
+    }
+    pacing = {
+        "enabled": True,
+        "mode": "enforce",
+        "pace_multiplier": 1.0,
+        "min_daily_allowance_usd": 0.0,
+        "max_daily_allowance_usd": None,
+    }
+    forecast_cfg = {
+        "enabled": True,
+        "history_lookback_days": 56,
+        "weights": {
+            "baseline": 0.1,
+            "weekday_history": 0.0,
+            "scheduled_jobs": 0.9,
+        },
+        "weekday_smoothing_days": 2.0,
+        "min_day_weight": 0.25,
+        "max_day_weight": 4.0,
+        "fallback_cost_per_unit_usd": {"teacher": 1.0, "student": 1.0},
+    }
+
+    today = period_keys(now, "Asia/Tokyo")["daily"]
+    schedule = {
+        "dates": {
+            today: {
+                "teacher": {
+                    "expected_cost_usd": 10.0
+                }
+            }
+        }
+    }
+
+    checks = forecast_aware_pacing_checks(
+        [],
+        workload="teacher",
+        amount_usd=1.0,
+        now=now,
+        tz_name="Asia/Tokyo",
+        limits=limits,
+        pacing=pacing,
+        forecast_cfg=forecast_cfg,
+        schedule=schedule,
+    )
+    assert checks[0]["strategy"] == "forecast_aware"
+    assert checks[0]["scheduled_cost_usd"] == 10.0
+    assert checks[0]["today_demand_weight"] > 1.0
+
+
+def test_forecast_disabled_falls_back_to_equal_remaining_days():
+    now = datetime(2026, 8, 20, 0, 0, tzinfo=timezone.utc)
+    checks = forecast_aware_pacing_checks(
+        [],
+        workload="teacher",
+        amount_usd=1.0,
+        now=now,
+        tz_name="Asia/Tokyo",
+        limits={"global": {"monthly": 12.0}, "workload:teacher": {"monthly": None}},
+        pacing={
+            "enabled": True,
+            "mode": "enforce",
+            "pace_multiplier": 1.0,
+            "min_daily_allowance_usd": 0.0,
+            "max_daily_allowance_usd": None,
+        },
+        forecast_cfg={"enabled": False},
+        schedule={"dates": {}},
+    )
+    assert checks[0]["daily_allowance_usd"] == 1.0

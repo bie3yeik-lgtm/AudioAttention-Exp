@@ -1,0 +1,978 @@
+diff --git a/mnt/data/AudioAttention-Exp-forecast-pacing/.github/workflows/budget-forecast-report.yml b/.github/workflows/budget-forecast-report.yml
+new file mode 100644
+index 0000000..131737f
+--- /dev/null
++++ b/.github/workflows/budget-forecast-report.yml
+@@ -0,0 +1,58 @@
++name: Budget Forecast Report
++
++on:
++  workflow_dispatch:
++  schedule:
++    - cron: "43 20 * * *"
++
++permissions:
++  contents: read
++
++jobs:
++  report:
++    strategy:
++      matrix:
++        workload: [teacher, student]
++
++    runs-on: ubuntu-latest
++
++    env:
++      HF_TOKEN: ${{ secrets.HF_TOKEN }}
++      HF_BUCKET: ${{ vars.HF_BUCKET }}
++
++      GPU_BUDGET_GLOBAL_MONTHLY_USD: ${{ vars.GPU_BUDGET_GLOBAL_MONTHLY_USD }}
++      GPU_BUDGET_TEACHER_MONTHLY_USD: ${{ vars.GPU_BUDGET_TEACHER_MONTHLY_USD }}
++      GPU_BUDGET_STUDENT_MONTHLY_USD: ${{ vars.GPU_BUDGET_STUDENT_MONTHLY_USD }}
++
++      GPU_BUDGET_PACING_ENABLED: ${{ vars.GPU_BUDGET_PACING_ENABLED }}
++      GPU_BUDGET_PACING_MODE: ${{ vars.GPU_BUDGET_PACING_MODE }}
++      GPU_BUDGET_PACING_MULTIPLIER: ${{ vars.GPU_BUDGET_PACING_MULTIPLIER }}
++
++      GPU_BUDGET_FORECAST_ENABLED: ${{ vars.GPU_BUDGET_FORECAST_ENABLED }}
++      GPU_BUDGET_FORECAST_FILE: ${{ vars.GPU_BUDGET_FORECAST_FILE }}
++      GPU_BUDGET_FORECAST_LOOKBACK_DAYS: ${{ vars.GPU_BUDGET_FORECAST_LOOKBACK_DAYS }}
++      GPU_BUDGET_FORECAST_BASELINE_WEIGHT: ${{ vars.GPU_BUDGET_FORECAST_BASELINE_WEIGHT }}
++      GPU_BUDGET_FORECAST_WEEKDAY_WEIGHT: ${{ vars.GPU_BUDGET_FORECAST_WEEKDAY_WEIGHT }}
++      GPU_BUDGET_FORECAST_SCHEDULE_WEIGHT: ${{ vars.GPU_BUDGET_FORECAST_SCHEDULE_WEIGHT }}
++
++    steps:
++      - uses: actions/checkout@v6
++
++      - uses: actions/setup-python@v6
++        with:
++          python-version: "3.11"
++
++      - run: pip install -r infra/budget_ledger/requirements.txt
++
++      - name: Forecast-aware pacing report
++        env:
++          PYTHONPATH: infra/budget_ledger
++        run: |
++          python infra/budget_ledger/forecast_report.py             --bucket "$HF_BUCKET"             --workload '${{ matrix.workload }}'             | tee forecast.json
++
++          {
++            echo "## Forecast-aware Budget Pacing — ${{ matrix.workload }}"
++            echo '```json'
++            cat forecast.json
++            echo '```'
++          } >> "$GITHUB_STEP_SUMMARY"
+diff --git a/mnt/data/AudioAttention-Exp-forecast-pacing/configs/budget-demand-forecast.yaml b/configs/budget-demand-forecast.yaml
+new file mode 100644
+index 0000000..96a7667
+--- /dev/null
++++ b/configs/budget-demand-forecast.yaml
+@@ -0,0 +1,15 @@
++version: 1
++
++# Optional per-day workload forecast.
++#
++# Each workload entry may specify:
++#   jobs: integer
++#   units: number
++#   expected_cost_usd: number
++#
++# If expected_cost_usd is omitted, `units` is converted with the
++# fallback_cost_per_unit_usd in configs/budget-ledger.yaml.
++#
++# Keep this file sparse: dates without entries are treated as no explicitly
++# scheduled workload, while historical weekday demand still contributes.
++dates: {}
+diff --git a/configs/budget-ledger.yaml b/configs/budget-ledger.yaml
+index 12a613b..66f6af8 100644
+--- a/configs/budget-ledger.yaml
++++ b/configs/budget-ledger.yaml
+@@ -27,6 +27,44 @@ pacing:
+     min_daily_allowance_usd: GPU_BUDGET_PACING_MIN_DAILY_USD
+     max_daily_allowance_usd: GPU_BUDGET_PACING_MAX_DAILY_USD
+ 
++forecast:
++  enabled: true
++
++  # Historical demand window used to estimate weekday GPU demand.
++  history_lookback_days: 56
++
++  # Demand-weight blending. The values do not have to sum to one; they are
++  # normalized internally.
++  weights:
++    baseline: 0.10
++    weekday_history: 0.45
++    scheduled_jobs: 0.45
++
++  # Regularizes sparse weekday history toward neutral demand.
++  weekday_smoothing_days: 2.0
++
++  # Prevent one unusual day from taking essentially the whole month budget.
++  min_day_weight: 0.25
++  max_day_weight: 4.0
++
++  # Planned Teacher/Student workload forecast.
++  # Can be overridden with GPU_BUDGET_FORECAST_FILE.
++  schedule_file: configs/budget-demand-forecast.yaml
++
++  # Used only when a schedule row provides `units` but not
++  # `expected_cost_usd`.
++  fallback_cost_per_unit_usd:
++    teacher: 0.40
++    student: 0.25
++
++  env_overrides:
++    enabled: GPU_BUDGET_FORECAST_ENABLED
++    schedule_file: GPU_BUDGET_FORECAST_FILE
++    history_lookback_days: GPU_BUDGET_FORECAST_LOOKBACK_DAYS
++    baseline_weight: GPU_BUDGET_FORECAST_BASELINE_WEIGHT
++    weekday_history_weight: GPU_BUDGET_FORECAST_WEEKDAY_WEIGHT
++    scheduled_jobs_weight: GPU_BUDGET_FORECAST_SCHEDULE_WEIGHT
++
+ limits:
+   global:
+     daily_usd: null
+diff --git a/mnt/data/AudioAttention-Exp-forecast-pacing/docs/forecast-aware-budget-pacing.md b/docs/forecast-aware-budget-pacing.md
+new file mode 100644
+index 0000000..1bc531d
+--- /dev/null
++++ b/docs/forecast-aware-budget-pacing.md
+@@ -0,0 +1,117 @@
++# Forecast-aware Budget Pacing
++
++Forecast-aware pacing replaces equal remaining-day allocation with demand-weighted allocation.
++
++## Demand signals
++
++Each remaining day receives a demand weight from three signals:
++
++```text
++baseline
++weekday historical GPU demand
++scheduled Teacher/Student workload
++```
++
++The default blend is:
++
++```text
++10% baseline
++45% weekday history
++45% scheduled workload
++```
++
++## Historical weekday demand
++
++The ledger reconstructs daily committed GPU cost over the previous 56 days.
++For each weekday it calculates a smoothed mean and converts it into a factor
++relative to the overall historical daily mean.
++
++For example:
++
++```text
++Monday historical factor = 1.35
++Friday historical factor = 0.72
++```
++
++Sparse weekday history is shrunk toward the neutral factor `1.0`.
++
++## Scheduled workload
++
++`configs/budget-demand-forecast.yaml` can describe expected Teacher/Student work:
++
++```yaml
++dates:
++  "2026-08-24":
++    teacher:
++      jobs: 2
++      units: 3.0
++    student:
++      jobs: 1
++      units: 2
++
++  "2026-08-25":
++    teacher:
++      expected_cost_usd: 1.40
++```
++
++When `expected_cost_usd` is present it is used directly.
++Otherwise `units` is converted with the configured workload fallback cost/unit.
++
++## Allocation
++
++For every remaining calendar day:
++
++```text
++demand_weight =
++  baseline_weight * 1
++  + weekday_weight * weekday_history_factor
++  + schedule_weight * scheduled_demand_factor
++```
++
++Weights are clamped and the remaining monthly budget is allocated proportionally:
++
++```text
++today_allowance =
++  month_available_at_day_start
++  * today_demand_weight
++  / sum(remaining_day_demand_weights)
++```
++
++Today's already committed amount is subtracted before admitting a new reservation.
++
++## Scope
++
++Forecast-aware pacing is calculated independently for:
++
++```text
++global
++workload:teacher
++workload:student
++```
++
++A reservation must pass every applicable enforced check.
++
++## Operational behavior
++
++- Weekdays that historically consume more GPU receive a larger share.
++- Known future Teacher/Student jobs reserve budget for those dates.
++- If a scheduled job is removed, future weights rebalance automatically.
++- Unused budget still carries forward.
++- Monthly hard caps remain authoritative.
++- Setting `forecast.enabled=false` falls back to ordinary remaining-days pacing.
++
++## Environment overrides
++
++```text
++GPU_BUDGET_FORECAST_ENABLED
++GPU_BUDGET_FORECAST_FILE
++GPU_BUDGET_FORECAST_LOOKBACK_DAYS
++GPU_BUDGET_FORECAST_BASELINE_WEIGHT
++GPU_BUDGET_FORECAST_WEEKDAY_WEIGHT
++GPU_BUDGET_FORECAST_SCHEDULE_WEIGHT
++```
++
++## Limits
++
++The forecast is a pacing heuristic, not a billing prediction.
++Hard per-job budget constraints and monthly ledger caps remain the safety boundaries.
+diff --git a/infra/budget_ledger/config.py b/infra/budget_ledger/config.py
+index fe00bbb..6dae5cc 100644
+--- a/infra/budget_ledger/config.py
++++ b/infra/budget_ledger/config.py
+@@ -78,3 +78,59 @@ def resolved_pacing(cfg: dict[str, Any]) -> dict[str, Any]:
+             envs.get("max_daily_allowance_usd"), source.get("max_daily_allowance_usd")
+         ),
+     }
++
++
++def _env_int(name: str | None, default: int) -> int:
++    if not name:
++        return default
++    raw = os.environ.get(name)
++    if raw is None or not raw.strip():
++        return default
++    return int(raw)
++
++
++def resolved_forecast(cfg: dict[str, Any]) -> dict[str, Any]:
++    source = cfg.get("forecast", {})
++    envs = source.get("env_overrides", {})
++    weights = source.get("weights", {})
++    fallback = source.get("fallback_cost_per_unit_usd", {})
++
++    schedule_file = os.environ.get(
++        envs.get("schedule_file", ""),
++        source.get("schedule_file", "configs/budget-demand-forecast.yaml"),
++    )
++
++    return {
++        "enabled": _env_bool(
++            envs.get("enabled"),
++            bool(source.get("enabled", True)),
++        ),
++        "history_lookback_days": _env_int(
++            envs.get("history_lookback_days"),
++            int(source.get("history_lookback_days", 56)),
++        ),
++        "weights": {
++            "baseline": _env_float(
++                envs.get("baseline_weight"),
++                float(weights.get("baseline", 0.10)),
++            ),
++            "weekday_history": _env_float(
++                envs.get("weekday_history_weight"),
++                float(weights.get("weekday_history", 0.45)),
++            ),
++            "scheduled_jobs": _env_float(
++                envs.get("scheduled_jobs_weight"),
++                float(weights.get("scheduled_jobs", 0.45)),
++            ),
++        },
++        "weekday_smoothing_days": float(
++            source.get("weekday_smoothing_days", 2.0)
++        ),
++        "min_day_weight": float(source.get("min_day_weight", 0.25)),
++        "max_day_weight": float(source.get("max_day_weight", 4.0)),
++        "schedule_file": schedule_file,
++        "fallback_cost_per_unit_usd": {
++            "teacher": float(fallback.get("teacher", 0.40)),
++            "student": float(fallback.get("student", 0.25)),
++        },
++    }
+diff --git a/infra/budget_ledger/core.py b/infra/budget_ledger/core.py
+index 82cb5cc..13175d2 100644
+--- a/infra/budget_ledger/core.py
++++ b/infra/budget_ledger/core.py
+@@ -219,3 +219,137 @@ def pacing_checks(
+             }
+         )
+     return checks
++
++
++def forecast_aware_pacing_checks(
++    events: list[dict[str, Any]],
++    *,
++    workload: str,
++    amount_usd: float,
++    now: datetime,
++    tz_name: str,
++    limits: dict[str, dict[str, float | None]],
++    pacing: dict[str, Any],
++    forecast_cfg: dict[str, Any],
++    schedule: dict[str, Any],
++) -> list[dict[str, Any]]:
++    """Demand-weighted monthly pacing.
++
++    Falls back to ordinary remaining-days pacing when forecast is disabled.
++    """
++    if not pacing.get("enabled", True):
++        return []
++
++    if not forecast_cfg.get("enabled", True):
++        return pacing_checks(
++            events,
++            workload=workload,
++            amount_usd=amount_usd,
++            now=now,
++            tz_name=tz_name,
++            limits=limits,
++            pacing=pacing,
++        )
++
++    from forecast import remaining_day_weights
++
++    local = now.astimezone(ZoneInfo(tz_name))
++    periods = period_keys(now, tz_name)
++    multiplier = float(pacing.get("pace_multiplier", 1.0))
++    min_daily = float(pacing.get("min_daily_allowance_usd", 0.0) or 0.0)
++    max_daily = pacing.get("max_daily_allowance_usd")
++    max_daily = None if max_daily is None else float(max_daily)
++    mode = str(pacing.get("mode", "enforce"))
++
++    checks: list[dict[str, Any]] = []
++    for scope in scope_names(workload):
++        monthly_cap = limits.get(scope, {}).get("monthly")
++        if monthly_cap is None:
++            continue
++
++        monthly = usage_for_period(
++            events,
++            period_type="monthly",
++            period_key=periods["monthly"],
++            scope=scope,
++        )
++        daily = usage_for_period(
++            events,
++            period_type="daily",
++            period_key=periods["daily"],
++            scope=scope,
++        )
++
++        committed_before_today = max(
++            0.0, monthly["committed_usd"] - daily["committed_usd"]
++        )
++        month_available_at_day_start = max(
++            0.0, float(monthly_cap) - committed_before_today
++        )
++
++        weights = remaining_day_weights(
++            events,
++            scope=scope,
++            now=now,
++            tz_name=tz_name,
++            forecast_cfg=forecast_cfg,
++            schedule=schedule,
++        )
++        total_weight = sum(float(x["demand_weight"]) for x in weights)
++        today = next(
++            (x for x in weights if x["date"] == local.date().isoformat()),
++            None,
++        )
++        today_weight = float(today["demand_weight"]) if today else 1.0
++
++        if total_weight <= 0:
++            base_allowance = month_available_at_day_start / max(1, len(weights))
++        else:
++            base_allowance = (
++                month_available_at_day_start * today_weight / total_weight
++            )
++
++        allowance = max(min_daily, base_allowance * multiplier)
++        if max_daily is not None:
++            allowance = min(allowance, max_daily)
++        allowance = min(allowance, month_available_at_day_start)
++
++        available_today = max(0.0, allowance - daily["committed_usd"])
++        would_fit = float(amount_usd) <= available_today + 1e-9
++
++        checks.append(
++            {
++                "scope": scope,
++                "mode": mode,
++                "strategy": "forecast_aware",
++                "period_key": periods["daily"],
++                "monthly_period_key": periods["monthly"],
++                "monthly_limit_usd": float(monthly_cap),
++                "monthly_committed_usd": monthly["committed_usd"],
++                "daily_committed_usd": daily["committed_usd"],
++                "committed_before_today_usd": committed_before_today,
++                "month_available_at_day_start_usd": month_available_at_day_start,
++                "remaining_days_in_month": len(weights),
++                "today_demand_weight": today_weight,
++                "remaining_demand_weight": total_weight,
++                "weekday_history_factor": (
++                    today.get("weekday_history_factor") if today else None
++                ),
++                "scheduled_cost_usd": (
++                    today.get("scheduled_cost_usd") if today else 0.0
++                ),
++                "schedule_factor": (
++                    today.get("schedule_factor") if today else None
++                ),
++                "base_daily_allowance_usd": base_allowance,
++                "pace_multiplier": multiplier,
++                "daily_allowance_usd": allowance,
++                "available_today_usd": available_today,
++                "requested_usd": float(amount_usd),
++                "would_fit": would_fit,
++                "allowed": would_fit if mode == "enforce" else True,
++                "remaining_day_weights": weights,
++            }
++        )
++
++    return checks
+diff --git a/mnt/data/AudioAttention-Exp-forecast-pacing/infra/budget_ledger/forecast.py b/infra/budget_ledger/forecast.py
+new file mode 100644
+index 0000000..a628b2c
+--- /dev/null
++++ b/infra/budget_ledger/forecast.py
+@@ -0,0 +1,212 @@
++from __future__ import annotations
++
++import math
++from collections import defaultdict
++from datetime import date, datetime, timedelta
++from pathlib import Path
++from typing import Any
++
++import yaml
++from zoneinfo import ZoneInfo
++
++from core import reservation_state
++
++
++def load_schedule(path: str) -> dict[str, Any]:
++    p = Path(path)
++    if not p.exists():
++        return {"version": 1, "dates": {}}
++    with p.open("r", encoding="utf-8") as f:
++        return yaml.safe_load(f) or {"version": 1, "dates": {}}
++
++
++def scheduled_cost_usd(
++    schedule: dict[str, Any],
++    *,
++    day: date,
++    scope: str,
++    fallback_cost_per_unit_usd: dict[str, float],
++) -> float:
++    row = (schedule.get("dates") or {}).get(day.isoformat()) or {}
++
++    def workload_cost(workload: str) -> float:
++        item = row.get(workload) or {}
++        if item.get("expected_cost_usd") is not None:
++            return max(0.0, float(item["expected_cost_usd"]))
++        units = float(item.get("units", 0.0) or 0.0)
++        return max(
++            0.0,
++            units * float(fallback_cost_per_unit_usd.get(workload, 0.0)),
++        )
++
++    if scope == "global":
++        return workload_cost("teacher") + workload_cost("student")
++    if scope.startswith("workload:"):
++        return workload_cost(scope.split(":", 1)[1])
++    return 0.0
++
++
++def historical_daily_demand(
++    events: list[dict[str, Any]],
++    *,
++    scope: str,
++    now: datetime,
++    tz_name: str,
++    lookback_days: int,
++) -> dict[date, float]:
++    """Return settled/reserved committed GPU cost by reservation-local day."""
++    local_now = now.astimezone(ZoneInfo(tz_name))
++    start_day = local_now.date() - timedelta(days=lookback_days)
++    out: dict[date, float] = defaultdict(float)
++
++    for state in reservation_state(events).values():
++        reservation = state.get("reservation")
++        if not reservation:
++            continue
++        if scope not in reservation.get("scopes", []):
++            continue
++
++        day_text = (reservation.get("periods") or {}).get("daily")
++        if not day_text:
++            continue
++        try:
++            day = date.fromisoformat(day_text)
++        except ValueError:
++            continue
++        if day < start_day or day >= local_now.date():
++            continue
++
++        settlement = state.get("settlement")
++        release = state.get("release")
++        if settlement:
++            amount = float(settlement.get("actual_cost_usd", 0.0))
++        elif release:
++            amount = 0.0
++        else:
++            amount = float(reservation.get("reserved_cost_usd", 0.0))
++        out[day] += max(0.0, amount)
++
++    return dict(out)
++
++
++def weekday_factors(
++    daily_demand: dict[date, float],
++    *,
++    smoothing_days: float = 2.0,
++) -> dict[int, float]:
++    """Smoothed weekday mean / overall mean. Neutral factor is 1."""
++    if not daily_demand:
++        return {i: 1.0 for i in range(7)}
++
++    total = sum(daily_demand.values())
++    n_days = len(daily_demand)
++    overall_mean = total / max(1, n_days)
++    if overall_mean <= 0:
++        return {i: 1.0 for i in range(7)}
++
++    sums = defaultdict(float)
++    counts = defaultdict(int)
++    for d, amount in daily_demand.items():
++        sums[d.weekday()] += amount
++        counts[d.weekday()] += 1
++
++    factors = {}
++    prior_n = max(0.0, float(smoothing_days))
++    for weekday in range(7):
++        smoothed_mean = (
++            sums[weekday] + prior_n * overall_mean
++        ) / max(1e-9, counts[weekday] + prior_n)
++        factors[weekday] = max(0.0, smoothed_mean / overall_mean)
++    return factors
++
++
++def _normalized_schedule_factors(
++    schedule_costs: dict[date, float],
++) -> dict[date, float]:
++    if not schedule_costs:
++        return {}
++    values = list(schedule_costs.values())
++    mean_value = sum(values) / len(values)
++    if mean_value <= 0:
++        return {d: 1.0 for d in schedule_costs}
++    # Add a neutral prior equal to the mean so zero-plan days do not collapse.
++    return {
++        d: (cost + mean_value) / (2.0 * mean_value)
++        for d, cost in schedule_costs.items()
++    }
++
++
++def remaining_day_weights(
++    events: list[dict[str, Any]],
++    *,
++    scope: str,
++    now: datetime,
++    tz_name: str,
++    forecast_cfg: dict[str, Any],
++    schedule: dict[str, Any],
++) -> list[dict[str, Any]]:
++    local = now.astimezone(ZoneInfo(tz_name))
++    last_day = (
++        (local.replace(day=28) + timedelta(days=4)).replace(day=1)
++        - timedelta(days=1)
++    ).date()
++
++    days = []
++    d = local.date()
++    while d <= last_day:
++        days.append(d)
++        d += timedelta(days=1)
++
++    historical = historical_daily_demand(
++        events,
++        scope=scope,
++        now=now,
++        tz_name=tz_name,
++        lookback_days=int(forecast_cfg["history_lookback_days"]),
++    )
++    weekday = weekday_factors(
++        historical,
++        smoothing_days=float(forecast_cfg["weekday_smoothing_days"]),
++    )
++
++    scheduled = {
++        d: scheduled_cost_usd(
++            schedule,
++            day=d,
++            scope=scope,
++            fallback_cost_per_unit_usd=forecast_cfg[
++                "fallback_cost_per_unit_usd"
++            ],
++        )
++        for d in days
++    }
++    schedule_factors = _normalized_schedule_factors(scheduled)
++
++    weights_cfg = forecast_cfg["weights"]
++    wb = max(0.0, float(weights_cfg.get("baseline", 0.0) or 0.0))
++    wh = max(0.0, float(weights_cfg.get("weekday_history", 0.0) or 0.0))
++    ws = max(0.0, float(weights_cfg.get("scheduled_jobs", 0.0) or 0.0))
++    denom = wb + wh + ws
++    if denom <= 0:
++        wb, wh, ws, denom = 1.0, 0.0, 0.0, 1.0
++
++    min_w = float(forecast_cfg.get("min_day_weight", 0.25))
++    max_w = float(forecast_cfg.get("max_day_weight", 4.0))
++
++    rows = []
++    for d in days:
++        h = weekday.get(d.weekday(), 1.0)
++        sf = schedule_factors.get(d, 1.0)
++        raw = (wb * 1.0 + wh * h + ws * sf) / denom
++        weight = min(max_w, max(min_w, raw))
++        rows.append(
++            {
++                "date": d.isoformat(),
++                "weekday": d.weekday(),
++                "weekday_history_factor": h,
++                "scheduled_cost_usd": scheduled[d],
++                "schedule_factor": sf,
++                "demand_weight": weight,
++            }
++        )
++    return rows
+diff --git a/mnt/data/AudioAttention-Exp-forecast-pacing/infra/budget_ledger/forecast_report.py b/infra/budget_ledger/forecast_report.py
+new file mode 100644
+index 0000000..2dc5cb4
+--- /dev/null
++++ b/infra/budget_ledger/forecast_report.py
+@@ -0,0 +1,56 @@
++#!/usr/bin/env python3
++from __future__ import annotations
++
++import argparse
++import json
++import os
++from datetime import datetime, timezone
++
++from config import load_config, resolved_forecast, resolved_limits, resolved_pacing
++from core import forecast_aware_pacing_checks
++from forecast import load_schedule
++from storage import load_events
++
++
++def main() -> None:
++    p = argparse.ArgumentParser()
++    p.add_argument("--bucket", default=os.environ.get("HF_BUCKET"))
++    p.add_argument("--workload", choices=["teacher", "student"], required=True)
++    p.add_argument("--config", default="configs/budget-ledger.yaml")
++    args = p.parse_args()
++
++    if not args.bucket:
++        raise RuntimeError("HF_BUCKET or --bucket is required")
++
++    cfg = load_config(args.config)
++    forecast_cfg = resolved_forecast(cfg)
++    schedule = load_schedule(forecast_cfg["schedule_file"])
++    events = load_events(args.bucket, cfg["storage"]["prefix"])
++
++    checks = forecast_aware_pacing_checks(
++        events,
++        workload=args.workload,
++        amount_usd=0.0,
++        now=datetime.now(timezone.utc),
++        tz_name=cfg["timezone"],
++        limits=resolved_limits(cfg),
++        pacing=resolved_pacing(cfg),
++        forecast_cfg=forecast_cfg,
++        schedule=schedule,
++    )
++
++    print(
++        json.dumps(
++            {
++                "workload": args.workload,
++                "forecast": forecast_cfg,
++                "checks": checks,
++            },
++            ensure_ascii=False,
++            indent=2,
++        )
++    )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/infra/budget_ledger/report.py b/infra/budget_ledger/report.py
+index edc8df9..1b57d38 100644
+--- a/infra/budget_ledger/report.py
++++ b/infra/budget_ledger/report.py
+@@ -6,9 +6,10 @@ import json
+ import os
+ from datetime import datetime, timezone
+ 
+-from config import load_config, resolved_limits, resolved_pacing
+-from core import pacing_checks, period_keys, scope_names, usage_for_period
++from config import load_config, resolved_forecast, resolved_limits, resolved_pacing
++from core import forecast_aware_pacing_checks, period_keys, scope_names, usage_for_period
+ from storage import load_events
++from forecast import load_schedule
+ 
+ 
+ def main() -> None:
+@@ -23,10 +24,12 @@ def main() -> None:
+     cfg = load_config(args.config)
+     limits = resolved_limits(cfg)
+     pacing = resolved_pacing(cfg)
++    forecast_cfg = resolved_forecast(cfg)
++    schedule = load_schedule(forecast_cfg["schedule_file"])
+     events = load_events(args.bucket, cfg["storage"]["prefix"])
+     periods = period_keys(datetime.now(timezone.utc), cfg["timezone"])
+     scopes = ["global"] + ([f"workload:{args.workload}"] if args.workload else ["workload:teacher", "workload:student"])
+-    report = {"periods": periods, "pacing": pacing, "scopes": {}}
++    report = {"periods": periods, "pacing": pacing, "forecast": forecast_cfg, "scopes": {}}
+     for scope in scopes:
+         s = {}
+         for ptype, pkey in periods.items():
+@@ -39,7 +42,7 @@ def main() -> None:
+                 "remaining_usd": None if cap is None else float(cap) - usage["committed_usd"],
+             }
+         workload_for_scope = args.workload if args.workload else (scope.split(":", 1)[1] if scope.startswith("workload:") else "teacher")
+-        pace = pacing_checks(
++        pace = forecast_aware_pacing_checks(
+             events,
+             workload=workload_for_scope,
+             amount_usd=0.0,
+@@ -47,6 +50,8 @@ def main() -> None:
+             tz_name=cfg["timezone"],
+             limits=limits,
+             pacing=pacing,
++            forecast_cfg=forecast_cfg,
++            schedule=schedule,
+         )
+         matching = [x for x in pace if x["scope"] == scope]
+         if matching:
+diff --git a/infra/budget_ledger/reserve.py b/infra/budget_ledger/reserve.py
+index df2e762..5a11fb1 100644
+--- a/infra/budget_ledger/reserve.py
++++ b/infra/budget_ledger/reserve.py
+@@ -6,9 +6,10 @@ import json
+ import os
+ from datetime import datetime, timezone
+ 
+-from config import load_config, resolved_limits, resolved_pacing
+-from core import check_limits, pacing_checks, period_keys, reservation_state, scope_names
++from config import load_config, resolved_forecast, resolved_limits, resolved_pacing
++from core import check_limits, forecast_aware_pacing_checks, period_keys, reservation_state, scope_names
+ from storage import append_event, load_events
++from forecast import load_schedule
+ 
+ 
+ def main() -> None:
+@@ -46,6 +47,8 @@ def main() -> None:
+     periods = period_keys(now, cfg["timezone"])
+     limits = resolved_limits(cfg)
+     pacing = resolved_pacing(cfg)
++    forecast_cfg = resolved_forecast(cfg)
++    schedule = load_schedule(forecast_cfg["schedule_file"])
+     checks = check_limits(
+         events,
+         workload=args.workload,
+@@ -53,7 +56,7 @@ def main() -> None:
+         periods=periods,
+         limits=limits,
+     )
+-    pace_checks = pacing_checks(
++    pace_checks = forecast_aware_pacing_checks(
+         events,
+         workload=args.workload,
+         amount_usd=args.amount_usd,
+@@ -61,6 +64,8 @@ def main() -> None:
+         tz_name=cfg["timezone"],
+         limits=limits,
+         pacing=pacing,
++        forecast_cfg=forecast_cfg,
++        schedule=schedule,
+     )
+     denied = [x for x in checks if not x["allowed"]]
+     pacing_denied = [x for x in pace_checks if not x["allowed"]]
+@@ -71,6 +76,7 @@ def main() -> None:
+                     "status": "denied",
+                     "checks": checks,
+                     "pacing": pacing,
++                    "forecast": forecast_cfg,
+                     "pacing_checks": pace_checks,
+                 },
+                 ensure_ascii=False,
+@@ -91,7 +97,7 @@ def main() -> None:
+         "ttl_hours": int(cfg["reservation"]["ttl_hours"]),
+     }
+     path = append_event(args.bucket, storage_prefix, event)
+-    print(json.dumps({"status": "reserved", "path": path, "event": event, "checks": checks, "pacing": pacing, "pacing_checks": pace_checks}, ensure_ascii=False))
++    print(json.dumps({"status": "reserved", "path": path, "event": event, "checks": checks, "pacing": pacing, "forecast": forecast_cfg, "pacing_checks": pace_checks}, ensure_ascii=False))
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/tests/test_budget_ledger.py b/tests/test_budget_ledger.py
+index 824b90f..e1cad35 100644
+--- a/tests/test_budget_ledger.py
++++ b/tests/test_budget_ledger.py
+@@ -4,7 +4,8 @@ from pathlib import Path
+ 
+ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "infra" / "budget_ledger"))
+ 
+-from core import check_limits, pacing_checks, period_keys, reservation_state, usage_for_period
++from core import check_limits, forecast_aware_pacing_checks, pacing_checks, period_keys, reservation_state, usage_for_period
++from forecast import weekday_factors
+ 
+ 
+ def reservation(job_id, amount, periods, workload="teacher", created="2026-08-20T00:00:00+00:00"):
+@@ -124,3 +125,93 @@ def test_pacing_counts_today_commitment_against_allowance():
+     assert checks[0]["daily_allowance_usd"] == 1.0
+     assert abs(checks[0]["available_today_usd"] - 0.25) < 1e-9
+     assert checks[0]["allowed"] is False
++
++
++
++def test_weekday_factors_prefer_high_demand_weekday():
++    from datetime import date
++
++    demand = {
++        date(2026, 8, 3): 4.0,   # Monday
++        date(2026, 8, 10): 4.0,  # Monday
++        date(2026, 8, 4): 1.0,   # Tuesday
++        date(2026, 8, 11): 1.0,  # Tuesday
++    }
++    factors = weekday_factors(demand, smoothing_days=0.0)
++    assert factors[0] > factors[1]
++
++
++def test_forecast_aware_pacing_reserves_more_for_scheduled_day():
++    now = datetime(2026, 8, 20, 0, 0, tzinfo=timezone.utc)
++    limits = {
++        "global": {"monthly": 12.0},
++        "workload:teacher": {"monthly": None},
++    }
++    pacing = {
++        "enabled": True,
++        "mode": "enforce",
++        "pace_multiplier": 1.0,
++        "min_daily_allowance_usd": 0.0,
++        "max_daily_allowance_usd": None,
++    }
++    forecast_cfg = {
++        "enabled": True,
++        "history_lookback_days": 56,
++        "weights": {
++            "baseline": 0.1,
++            "weekday_history": 0.0,
++            "scheduled_jobs": 0.9,
++        },
++        "weekday_smoothing_days": 2.0,
++        "min_day_weight": 0.25,
++        "max_day_weight": 4.0,
++        "fallback_cost_per_unit_usd": {"teacher": 1.0, "student": 1.0},
++    }
++
++    today = period_keys(now, "Asia/Tokyo")["daily"]
++    schedule = {
++        "dates": {
++            today: {
++                "teacher": {
++                    "expected_cost_usd": 10.0
++                }
++            }
++        }
++    }
++
++    checks = forecast_aware_pacing_checks(
++        [],
++        workload="teacher",
++        amount_usd=1.0,
++        now=now,
++        tz_name="Asia/Tokyo",
++        limits=limits,
++        pacing=pacing,
++        forecast_cfg=forecast_cfg,
++        schedule=schedule,
++    )
++    assert checks[0]["strategy"] == "forecast_aware"
++    assert checks[0]["scheduled_cost_usd"] == 10.0
++    assert checks[0]["today_demand_weight"] > 1.0
++
++
++def test_forecast_disabled_falls_back_to_equal_remaining_days():
++    now = datetime(2026, 8, 20, 0, 0, tzinfo=timezone.utc)
++    checks = forecast_aware_pacing_checks(
++        [],
++        workload="teacher",
++        amount_usd=1.0,
++        now=now,
++        tz_name="Asia/Tokyo",
++        limits={"global": {"monthly": 12.0}, "workload:teacher": {"monthly": None}},
++        pacing={
++            "enabled": True,
++            "mode": "enforce",
++            "pace_multiplier": 1.0,
++            "min_daily_allowance_usd": 0.0,
++            "max_daily_allowance_usd": None,
++        },
++        forecast_cfg={"enabled": False},
++        schedule={"dates": {}},
++    )
++    assert checks[0]["daily_allowance_usd"] == 1.0
+diff --git a/tests/test_workflow_paths.py b/tests/test_workflow_paths.py
+index db11d31..f945244 100644
+--- a/tests/test_workflow_paths.py
++++ b/tests/test_workflow_paths.py
+@@ -26,3 +26,12 @@ def test_budgeted_unified_job_resolves_job_kind_before_writing_github_env():
+     assert "job_kind=\"$(jq -r '.runtime_env.JOB_KIND // .workload'" in text
+     assert 'for key in JOB_KIND AUDIO_REL' not in text
+     assert 'if [ -z "${JOB_KIND:-}" ]' not in text
++
++
++
++def test_budget_forecast_workflow_requirements_exist():
++    path = ROOT / ".github/workflows/budget-forecast-report.yml"
++    assert path.exists()
++    text = path.read_text()
++    assert "infra/budget_ledger/requirements.txt" in text
++    assert "forecast_report.py" in text

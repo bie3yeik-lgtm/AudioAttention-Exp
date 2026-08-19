@@ -219,3 +219,137 @@ def pacing_checks(
             }
         )
     return checks
+
+
+def forecast_aware_pacing_checks(
+    events: list[dict[str, Any]],
+    *,
+    workload: str,
+    amount_usd: float,
+    now: datetime,
+    tz_name: str,
+    limits: dict[str, dict[str, float | None]],
+    pacing: dict[str, Any],
+    forecast_cfg: dict[str, Any],
+    schedule: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Demand-weighted monthly pacing.
+
+    Falls back to ordinary remaining-days pacing when forecast is disabled.
+    """
+    if not pacing.get("enabled", True):
+        return []
+
+    if not forecast_cfg.get("enabled", True):
+        return pacing_checks(
+            events,
+            workload=workload,
+            amount_usd=amount_usd,
+            now=now,
+            tz_name=tz_name,
+            limits=limits,
+            pacing=pacing,
+        )
+
+    from forecast import remaining_day_weights
+
+    local = now.astimezone(ZoneInfo(tz_name))
+    periods = period_keys(now, tz_name)
+    multiplier = float(pacing.get("pace_multiplier", 1.0))
+    min_daily = float(pacing.get("min_daily_allowance_usd", 0.0) or 0.0)
+    max_daily = pacing.get("max_daily_allowance_usd")
+    max_daily = None if max_daily is None else float(max_daily)
+    mode = str(pacing.get("mode", "enforce"))
+
+    checks: list[dict[str, Any]] = []
+    for scope in scope_names(workload):
+        monthly_cap = limits.get(scope, {}).get("monthly")
+        if monthly_cap is None:
+            continue
+
+        monthly = usage_for_period(
+            events,
+            period_type="monthly",
+            period_key=periods["monthly"],
+            scope=scope,
+        )
+        daily = usage_for_period(
+            events,
+            period_type="daily",
+            period_key=periods["daily"],
+            scope=scope,
+        )
+
+        committed_before_today = max(
+            0.0, monthly["committed_usd"] - daily["committed_usd"]
+        )
+        month_available_at_day_start = max(
+            0.0, float(monthly_cap) - committed_before_today
+        )
+
+        weights = remaining_day_weights(
+            events,
+            scope=scope,
+            now=now,
+            tz_name=tz_name,
+            forecast_cfg=forecast_cfg,
+            schedule=schedule,
+        )
+        total_weight = sum(float(x["demand_weight"]) for x in weights)
+        today = next(
+            (x for x in weights if x["date"] == local.date().isoformat()),
+            None,
+        )
+        today_weight = float(today["demand_weight"]) if today else 1.0
+
+        if total_weight <= 0:
+            base_allowance = month_available_at_day_start / max(1, len(weights))
+        else:
+            base_allowance = (
+                month_available_at_day_start * today_weight / total_weight
+            )
+
+        allowance = max(min_daily, base_allowance * multiplier)
+        if max_daily is not None:
+            allowance = min(allowance, max_daily)
+        allowance = min(allowance, month_available_at_day_start)
+
+        available_today = max(0.0, allowance - daily["committed_usd"])
+        would_fit = float(amount_usd) <= available_today + 1e-9
+
+        checks.append(
+            {
+                "scope": scope,
+                "mode": mode,
+                "strategy": "forecast_aware",
+                "period_key": periods["daily"],
+                "monthly_period_key": periods["monthly"],
+                "monthly_limit_usd": float(monthly_cap),
+                "monthly_committed_usd": monthly["committed_usd"],
+                "daily_committed_usd": daily["committed_usd"],
+                "committed_before_today_usd": committed_before_today,
+                "month_available_at_day_start_usd": month_available_at_day_start,
+                "remaining_days_in_month": len(weights),
+                "today_demand_weight": today_weight,
+                "remaining_demand_weight": total_weight,
+                "weekday_history_factor": (
+                    today.get("weekday_history_factor") if today else None
+                ),
+                "scheduled_cost_usd": (
+                    today.get("scheduled_cost_usd") if today else 0.0
+                ),
+                "schedule_factor": (
+                    today.get("schedule_factor") if today else None
+                ),
+                "base_daily_allowance_usd": base_allowance,
+                "pace_multiplier": multiplier,
+                "daily_allowance_usd": allowance,
+                "available_today_usd": available_today,
+                "requested_usd": float(amount_usd),
+                "would_fit": would_fit,
+                "allowed": would_fit if mode == "enforce" else True,
+                "remaining_day_weights": weights,
+            }
+        )
+
+    return checks

@@ -6,9 +6,10 @@ import json
 import os
 from datetime import datetime, timezone
 
-from config import load_config, resolved_limits, resolved_pacing
-from core import check_limits, pacing_checks, period_keys, reservation_state, scope_names
+from config import load_config, resolved_forecast, resolved_limits, resolved_pacing
+from core import check_limits, forecast_aware_pacing_checks, period_keys, reservation_state, scope_names
 from storage import append_event, load_events
+from forecast import load_schedule
 
 
 def main() -> None:
@@ -46,6 +47,8 @@ def main() -> None:
     periods = period_keys(now, cfg["timezone"])
     limits = resolved_limits(cfg)
     pacing = resolved_pacing(cfg)
+    forecast_cfg = resolved_forecast(cfg)
+    schedule = load_schedule(forecast_cfg["schedule_file"])
     checks = check_limits(
         events,
         workload=args.workload,
@@ -53,7 +56,7 @@ def main() -> None:
         periods=periods,
         limits=limits,
     )
-    pace_checks = pacing_checks(
+    pace_checks = forecast_aware_pacing_checks(
         events,
         workload=args.workload,
         amount_usd=args.amount_usd,
@@ -61,6 +64,8 @@ def main() -> None:
         tz_name=cfg["timezone"],
         limits=limits,
         pacing=pacing,
+        forecast_cfg=forecast_cfg,
+        schedule=schedule,
     )
     denied = [x for x in checks if not x["allowed"]]
     pacing_denied = [x for x in pace_checks if not x["allowed"]]
@@ -71,6 +76,7 @@ def main() -> None:
                     "status": "denied",
                     "checks": checks,
                     "pacing": pacing,
+                    "forecast": forecast_cfg,
                     "pacing_checks": pace_checks,
                 },
                 ensure_ascii=False,
@@ -91,7 +97,7 @@ def main() -> None:
         "ttl_hours": int(cfg["reservation"]["ttl_hours"]),
     }
     path = append_event(args.bucket, storage_prefix, event)
-    print(json.dumps({"status": "reserved", "path": path, "event": event, "checks": checks, "pacing": pacing, "pacing_checks": pace_checks}, ensure_ascii=False))
+    print(json.dumps({"status": "reserved", "path": path, "event": event, "checks": checks, "pacing": pacing, "forecast": forecast_cfg, "pacing_checks": pace_checks}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

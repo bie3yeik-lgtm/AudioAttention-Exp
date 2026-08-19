@@ -78,3 +78,59 @@ def resolved_pacing(cfg: dict[str, Any]) -> dict[str, Any]:
             envs.get("max_daily_allowance_usd"), source.get("max_daily_allowance_usd")
         ),
     }
+
+
+def _env_int(name: str | None, default: int) -> int:
+    if not name:
+        return default
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return int(raw)
+
+
+def resolved_forecast(cfg: dict[str, Any]) -> dict[str, Any]:
+    source = cfg.get("forecast", {})
+    envs = source.get("env_overrides", {})
+    weights = source.get("weights", {})
+    fallback = source.get("fallback_cost_per_unit_usd", {})
+
+    schedule_file = os.environ.get(
+        envs.get("schedule_file", ""),
+        source.get("schedule_file", "configs/budget-demand-forecast.yaml"),
+    )
+
+    return {
+        "enabled": _env_bool(
+            envs.get("enabled"),
+            bool(source.get("enabled", True)),
+        ),
+        "history_lookback_days": _env_int(
+            envs.get("history_lookback_days"),
+            int(source.get("history_lookback_days", 56)),
+        ),
+        "weights": {
+            "baseline": _env_float(
+                envs.get("baseline_weight"),
+                float(weights.get("baseline", 0.10)),
+            ),
+            "weekday_history": _env_float(
+                envs.get("weekday_history_weight"),
+                float(weights.get("weekday_history", 0.45)),
+            ),
+            "scheduled_jobs": _env_float(
+                envs.get("scheduled_jobs_weight"),
+                float(weights.get("scheduled_jobs", 0.45)),
+            ),
+        },
+        "weekday_smoothing_days": float(
+            source.get("weekday_smoothing_days", 2.0)
+        ),
+        "min_day_weight": float(source.get("min_day_weight", 0.25)),
+        "max_day_weight": float(source.get("max_day_weight", 4.0)),
+        "schedule_file": schedule_file,
+        "fallback_cost_per_unit_usd": {
+            "teacher": float(fallback.get("teacher", 0.40)),
+            "student": float(fallback.get("student", 0.25)),
+        },
+    }

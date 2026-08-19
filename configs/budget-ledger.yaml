@@ -27,6 +27,44 @@ pacing:
     min_daily_allowance_usd: GPU_BUDGET_PACING_MIN_DAILY_USD
     max_daily_allowance_usd: GPU_BUDGET_PACING_MAX_DAILY_USD
 
+forecast:
+  enabled: true
+
+  # Historical demand window used to estimate weekday GPU demand.
+  history_lookback_days: 56
+
+  # Demand-weight blending. The values do not have to sum to one; they are
+  # normalized internally.
+  weights:
+    baseline: 0.10
+    weekday_history: 0.45
+    scheduled_jobs: 0.45
+
+  # Regularizes sparse weekday history toward neutral demand.
+  weekday_smoothing_days: 2.0
+
+  # Prevent one unusual day from taking essentially the whole month budget.
+  min_day_weight: 0.25
+  max_day_weight: 4.0
+
+  # Planned Teacher/Student workload forecast.
+  # Can be overridden with GPU_BUDGET_FORECAST_FILE.
+  schedule_file: configs/budget-demand-forecast.yaml
+
+  # Used only when a schedule row provides `units` but not
+  # `expected_cost_usd`.
+  fallback_cost_per_unit_usd:
+    teacher: 0.40
+    student: 0.25
+
+  env_overrides:
+    enabled: GPU_BUDGET_FORECAST_ENABLED
+    schedule_file: GPU_BUDGET_FORECAST_FILE
+    history_lookback_days: GPU_BUDGET_FORECAST_LOOKBACK_DAYS
+    baseline_weight: GPU_BUDGET_FORECAST_BASELINE_WEIGHT
+    weekday_history_weight: GPU_BUDGET_FORECAST_WEEKDAY_WEIGHT
+    scheduled_jobs_weight: GPU_BUDGET_FORECAST_SCHEDULE_WEIGHT
+
 limits:
   global:
     daily_usd: null

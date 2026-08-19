@@ -1,26 +1,37 @@
-# AudioAttention-Exp JOB_KIND + Budget Pacing patch
+# Forecast-aware Budget Pacing
 
-Baseline: `main@396a2f2f6732d2f5d04a39aceb5e2c4ed0aec273`.
+Combined patch baseline:
+`main@396a2f2f6732d2f5d04a39aceb5e2c4ed0aec273`.
 
-## Apply
+Use the combined patch if the previous JOB_KIND + Budget Pacing patch has NOT
+already been applied:
 
 ```bash
-git checkout main
-git pull --ff-only
-git apply --check AudioAttention-Exp-job-kind-budget-pacing.patch
-git apply AudioAttention-Exp-job-kind-budget-pacing.patch
+git apply --check AudioAttention-Exp-forecast-aware-budget-pacing.patch
+git apply AudioAttention-Exp-forecast-aware-budget-pacing.patch
+```
+
+If the previous `AudioAttention-Exp-job-kind-budget-pacing.patch` is already
+applied, use the incremental patch instead:
+
+```bash
+git apply --check AudioAttention-Exp-forecast-aware-budget-pacing-incremental.patch
+git apply AudioAttention-Exp-forecast-aware-budget-pacing-incremental.patch
+```
+
+Validate:
+
+```bash
 python -m pytest -q tests/test_budget_ledger.py tests/test_workflow_paths.py
 ```
 
-## Changes
+Implemented signals:
 
-- Fixes `JOB_KIND`: resolves `.runtime_env.JOB_KIND // .workload` in one shell variable before writing `$GITHUB_ENV`.
-- Adds remaining-days monthly Budget Pacing.
-- Applies pacing independently to global and workload monthly limits.
-- Unused monthly budget automatically carries forward.
-- Supports `enforce` and `advisory` modes.
-- Adds GitHub environment overrides for pacing.
-- Adds pacing state to Budget Ledger reports.
-- Adds regression tests and `docs/budget-pacing.md`.
+- weekday GPU demand from the append-only Budget Ledger;
+- scheduled Teacher/Student workload from `configs/budget-demand-forecast.yaml`;
+- remaining monthly budget;
+- demand-weighted allocation across remaining days;
+- global and workload-specific pacing;
+- fallback to equal remaining-days pacing when forecast is disabled.
 
-Validated locally: `10 passed`.
+Local validation: False
