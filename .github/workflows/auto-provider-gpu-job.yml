@@ -1,0 +1,267 @@
+name: Auto Provider GPU Job
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_kind:
+        description: Job to execute
+        type: choice
+        required: true
+        options:
+          - smoke
+          - teacher
+          - context-train
+          - editorial-train
+
+      image_kind:
+        description: GHCR image family
+        type: choice
+        required: true
+        options:
+          - stepaudio
+          - train
+
+      image_tag:
+        description: Immutable GHCR tag, normally sha-<40-char-git-sha>
+        required: true
+
+      audio_rel:
+        description: HF Bucket relative audio path for teacher
+        required: false
+        default: ""
+
+      segments_rel:
+        description: HF Bucket relative Parakeet segments path for teacher
+        required: false
+        default: ""
+
+      train_rel:
+        description: HF Bucket relative train.parquet
+        required: false
+        default: ""
+
+      valid_rel:
+        description: HF Bucket relative validation.parquet
+        required: false
+        default: ""
+
+      epochs:
+        description: Training epochs
+        required: false
+        default: "10"
+
+permissions:
+  contents: read
+  packages: read
+
+# Prevent two automatic launches for the same workload from racing and doubling cost.
+concurrency:
+  group: auto-gpu-${{ inputs.job_kind }}
+  cancel-in-progress: false
+
+jobs:
+  choose-and-launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: gpu-auto
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+
+      HF_ROOT: /mnt/hf
+      HF_HOME: /workspace/cache/huggingface
+      NEMO_CACHE_DIR: /workspace/cache/nemo
+      TORCH_HOME: /workspace/cache/torch
+
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      VAST_GPU_QUERY: ${{ vars.VAST_GPU_QUERY }}
+      VAST_DISK_GB: ${{ vars.VAST_DISK_GB }}
+
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      RUNPOD_REGISTRY_AUTH_ID: ${{ vars.RUNPOD_REGISTRY_AUTH_ID }}
+      RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE || 'SECURE' }}
+
+      JOB_KIND: ${{ inputs.job_kind }}
+      RUN_ID: auto-${{ github.run_id }}-${{ github.run_attempt }}
+      GIT_SHA: ${{ github.sha }}
+
+      AUDIO_REL: ${{ inputs.audio_rel }}
+      SEGMENTS_REL: ${{ inputs.segments_rel }}
+      TRAIN_REL: ${{ inputs.train_rel }}
+      VALID_REL: ${{ inputs.valid_rel }}
+      EPOCHS: ${{ inputs.epochs }}
+
+      PARAKEET_MODEL: nvidia/parakeet-tdt_ctc-0.6b-ja
+      STEPAUDIO_MODEL: stepfun-ai/Step-Audio-2-mini
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compose immutable image reference
+        shell: bash
+        run: |
+          IMAGE_REF="ghcr.io/${GITHUB_REPOSITORY_OWNER}/audio-editorial-${{ inputs.image_kind }}:${{ inputs.image_tag }}"
+          IMAGE_REF="${IMAGE_REF,,}"
+          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
+
+      - name: Validate workload inputs
+        shell: bash
+        run: |
+          case "$JOB_KIND" in
+            teacher)
+              test -n "$AUDIO_REL" || { echo "audio_rel is required for teacher"; exit 2; }
+              test -n "$SEGMENTS_REL" || { echo "segments_rel is required for teacher"; exit 2; }
+              ;;
+            context-train|editorial-train)
+              test -n "$TRAIN_REL" || { echo "train_rel is required for training"; exit 2; }
+              test -n "$VALID_REL" || { echo "valid_rel is required for training"; exit 2; }
+              ;;
+          esac
+
+      - name: Validate Vast variables and query current offers
+        id: vast_check
+        shell: bash
+        run: |
+          set +e
+          result="$(bash infra/vast/validate_offer.sh 2>vast-validation.err)"
+          rc=$?
+          set -e
+
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+
+          if [ "$rc" -eq 0 ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+
+            offer_id="$(
+              python - "$result" <<'PY'
+import json, sys
+print(json.loads(sys.argv[1])["offer_id"])
+PY
+            )"
+
+            echo "offer_id=$offer_id" >> "$GITHUB_OUTPUT"
+
+            {
+              echo "### Vast validation"
+              echo ""
+              echo "A matching Vast offer is currently available."
+              echo ""
+              echo '```json'
+              echo "$result"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+
+          elif [ "$rc" -eq 10 ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+
+            {
+              echo "### Vast validation"
+              echo ""
+              echo "The query is valid, but no matching Vast offer is currently available."
+              echo "Falling back to Runpod."
+            } >> "$GITHUB_STEP_SUMMARY"
+
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+
+            {
+              echo "### Vast validation"
+              echo ""
+              echo "Vast validation/search failed with exit code \`$rc\`."
+              echo "Falling back to Runpod."
+              echo ""
+              echo '```text'
+              cat vast-validation.err || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # Deliberately do not fail the workflow here: invalid/unavailable Vast
+          # capacity is a Runpod fallback condition.
+
+      - name: Try Vast first
+        id: vast_create
+        if: steps.vast_check.outputs.available == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          VAST_OFFER_ID: ${{ steps.vast_check.outputs.offer_id }}
+        run: |
+          instance_id="$(bash infra/vast/create_job.sh)"
+          echo "instance_id=$instance_id" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Provider selected"
+            echo ""
+            echo "**Vast** was selected."
+            echo ""
+            echo "- Instance ID: \`$instance_id\`"
+            echo "- Run ID: \`$RUN_ID\`"
+            echo "- Results: \`hf://buckets/$HF_BUCKET/runs/$RUN_ID/\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Determine whether Runpod fallback is needed
+        id: route
+        shell: bash
+        env:
+          VAST_AVAILABLE: ${{ steps.vast_check.outputs.available }}
+          VAST_OUTCOME: ${{ steps.vast_create.outcome }}
+        run: |
+          if [ "$VAST_AVAILABLE" != "true" ]; then
+            echo "provider=runpod" >> "$GITHUB_OUTPUT"
+            echo "reason=vast_unavailable_or_invalid" >> "$GITHUB_OUTPUT"
+          elif [ "$VAST_OUTCOME" != "success" ]; then
+            echo "provider=runpod" >> "$GITHUB_OUTPUT"
+            echo "reason=vast_create_failed" >> "$GITHUB_OUTPUT"
+          else
+            echo "provider=vast" >> "$GITHUB_OUTPUT"
+            echo "reason=vast_available_and_created" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fall back to Runpod
+        id: runpod_create
+        if: steps.route.outputs.provider == 'runpod'
+        shell: bash
+        run: |
+          args=(
+            --image "$IMAGE_REF"
+            --name "audio-editorial-${JOB_KIND}-${RUN_ID}"
+            --cloud-type "$RUNPOD_CLOUD_TYPE"
+            --gpu "NVIDIA RTX A6000"
+            --gpu "NVIDIA A40"
+            --gpu "NVIDIA L40S"
+            --container-disk 100
+            --volume 150
+          )
+
+          if [ -n "${RUNPOD_REGISTRY_AUTH_ID:-}" ]; then
+            args+=(--registry-auth-id "$RUNPOD_REGISTRY_AUTH_ID")
+          fi
+
+          pod_id="$(python infra/runpod/create_job.py "${args[@]}")"
+          echo "pod_id=$pod_id" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Provider selected"
+            echo ""
+            echo "**Runpod** was selected as fallback."
+            echo ""
+            echo "- Reason: \`${{ steps.route.outputs.reason }}\`"
+            echo "- Pod ID: \`$pod_id\`"
+            echo "- Run ID: \`$RUN_ID\`"
+            echo "- Results: \`hf://buckets/$HF_BUCKET/runs/$RUN_ID/\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Final routing summary
+        shell: bash
+        run: |
+          {
+            echo "### Routing result"
+            echo ""
+            echo "- Provider: \`${{ steps.route.outputs.provider }}\`"
+            echo "- Reason: \`${{ steps.route.outputs.reason }}\`"
+            echo "- VAST_GPU_QUERY: \`${VAST_GPU_QUERY}\`"
+            echo "- VAST_DISK_GB: \`${VAST_DISK_GB}\`"
+            echo "- Image: \`${IMAGE_REF}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
