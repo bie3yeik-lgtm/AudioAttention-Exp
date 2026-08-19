@@ -1,0 +1,12 @@
+version: 1
+
+shadow:
+  min_evaluable_runs: 20
+  min_history_coverage: 0.70
+  max_shadow_error_rate: 0.10
+
+promotion:
+  min_mean_regret_improvement_usd: 0.02
+  min_relative_cost_improvement: 0.03
+  max_p95_absolute_prediction_error_ratio: 0.35
+  require_non_negative_median_improvement: true
