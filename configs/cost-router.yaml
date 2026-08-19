@@ -1,0 +1,42 @@
+version: 1
+
+defaults:
+  runpod_cloud_type: SECURE
+  vast_disk_gb: 150
+  runpod_container_disk_gb: 100
+  runpod_volume_gb: 0
+  price_tolerance_usd_per_hour: 0.01
+
+profiles:
+  teacher:
+    image_kind: stepaudio
+
+    vast:
+      gpu_query: >-
+        gpu_ram>=48000 num_gpus=1 reliability>0.98
+        verified=true rentable=true
+      max_dph: 0.40
+
+    runpod:
+      gpu_ids:
+        - NVIDIA RTX A6000
+        - NVIDIA A40
+        - NVIDIA L40S
+        - NVIDIA RTX 6000 Ada Generation
+      max_dph: 0.55
+
+  student:
+    image_kind: train
+
+    vast:
+      gpu_query: >-
+        gpu_ram>=24000 num_gpus=1 reliability>0.98
+        verified=true rentable=true
+      max_dph: 0.22
+
+    runpod:
+      gpu_ids:
+        - NVIDIA RTX A5000
+        - NVIDIA GeForce RTX 3090
+        - NVIDIA GeForce RTX 4090
+      max_dph: 0.35
