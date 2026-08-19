@@ -1,0 +1,22 @@
+model:
+  text_dim: 384
+  acoustic_dim: 8
+  speaker_dim: 32
+  hidden_dim: 512
+  num_layers: 4
+  num_heads: 8
+  dropout: 0.1
+
+training:
+  batch_size: 32
+  epochs: 10
+  learning_rate: 0.0003
+  weight_decay: 0.01
+
+loss_weights:
+  importance: 1.0
+  emphasis: 0.5
+  novelty: 0.5
+  redundancy: 0.5
+  filler: 0.5
+  role: 1.0

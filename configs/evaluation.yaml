@@ -1,0 +1,15 @@
+metrics:
+  - keep_recall
+  - cut_precision
+  - cut_recall
+  - cut_f1
+  - macro_f1
+  - accuracy
+  - importance_mae
+  - compression_ratio_error
+  - fragmentation_count
+
+gates:
+  keep_recall_min: 0.98
+  cut_f1_min: 0.75
+  macro_f1_min: 0.80

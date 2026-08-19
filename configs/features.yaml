@@ -1,0 +1,16 @@
+audio:
+  sample_rate: 16000
+
+features:
+  rms_db: true
+  peak_db: true
+  pitch_mean: true
+  pitch_std: true
+  spectral_centroid: true
+  spectral_bandwidth: true
+  speech_rate: true
+  silence_before_ms: true
+  silence_after_ms: true
+
+normalization:
+  speaker_relative_loudness: true
