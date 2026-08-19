@@ -1,346 +1,91 @@
-# Full GitHub / Runpod / Vast source
+# Full Cloud Source
 
-## `docs/architecture.md`
+## `configs/cost-router.yaml`
 
-```markdown
-# Cloud architecture
+```yaml
+version: 1
 
-```text
-                         GitHub
-                           |
-               +-----------+-----------+
-               |                       |
-             Actions                  GHCR
-               |               immutable Docker images
-               |
-      +--------+--------+
-      |                 |
-   Runpod              Vast
-  stable GPU        marketplace GPU
-      |                 |
-      +--------+--------+
-               |
-            /mnt/hf
-               |
-        Hugging Face Bucket
-        single source of truth
-               |
-        +------+------+
-        |             |
-      data          results
-        |             |
-        +------HF Jobs+
-          deterministic
-          evaluation
-```
+defaults:
+  runpod_cloud_type: SECURE
+  vast_disk_gb: 150
+  runpod_container_disk_gb: 100
+  runpod_volume_gb: 0
+  price_tolerance_usd_per_hour: 0.01
 
-Responsibilities:
+profiles:
+  teacher:
+    image_kind: stepaudio
 
-- GitHub: source, CI/CD, orchestration.
-- GHCR: immutable execution images identified by digest/SHA.
-- HF Bucket: raw audio, derived data, labels, checkpoints, run outputs.
-- Runpod: stable interactive/teacher/training capacity.
-- Vast: low-cost/fallback/batch capacity.
-- HF Jobs: deterministic dataset validation and golden evaluation.
+    vast:
+      gpu_query: >-
+        gpu_ram>=48000 num_gpus=1 reliability>0.98
+        verified=true rentable=true
+      max_dph: 0.40
 
-```
+    runpod:
+      gpu_ids:
+        - NVIDIA RTX A6000
+        - NVIDIA A40
+        - NVIDIA L40S
+        - NVIDIA RTX 6000 Ada Generation
+      max_dph: 0.55
 
-## `docs/github-setup.md`
+  student:
+    image_kind: train
 
-```markdown
-# GitHub setup
+    vast:
+      gpu_query: >-
+        gpu_ram>=24000 num_gpus=1 reliability>0.98
+        verified=true rentable=true
+      max_dph: 0.22
 
-## Repository variables
-
-Repository or Environment variables:
-
-```text
-HF_BUCKET=YOUR_ORG/audio-editorial-data
-
-RUNPOD_CLOUD_TYPE=SECURE
-RUNPOD_REGISTRY_AUTH_ID=<optional Runpod registry auth ID>
-
-VAST_GPU_QUERY=gpu_ram>=48000 num_gpus=1 reliability>0.98 verified=true rentable=true
-VAST_DISK_GB=150
-```
-
-## Secrets
-
-```text
-HF_TOKEN
-RUNPOD_API_KEY
-VAST_API_KEY
-```
-
-If GHCR packages are private, Runpod also needs a registry auth entry that can pull
-`ghcr.io/<org>/audio-editorial-*`.
-
-Vast must likewise be able to pull the image. The simplest configuration for a
-research repository is to make the runtime GHCR packages public while keeping
-source/data private. If private images are required, add a scoped GHCR pull token
-to Vast's image/instance configuration rather than embedding it in source.
-
-## Environments
-
-Create:
-
-```text
-gpu-runpod
-gpu-vast
-hf-evaluation
-release
-```
-
-Recommended protection:
-
-- `gpu-runpod`: required reviewer
-- `gpu-vast`: required reviewer
-- `release`: required reviewer
-- `hf-evaluation`: no reviewer needed for routine validation
-
-This makes accidental paid GPU launches harder.
-
-## Branches
-
-Recommended:
-
-```text
-main       release-quality branch
-develop    integration branch
-feature/*  normal work
-```
-
-PRs target `develop`; release PRs merge `develop -> main`.
-
-## GHCR convention
-
-```text
-ghcr.io/<org>/audio-editorial-stepaudio:sha-<40-char-sha>
-ghcr.io/<org>/audio-editorial-train:sha-<40-char-sha>
-ghcr.io/<org>/audio-editorial-eval:sha-<40-char-sha>
-ghcr.io/<org>/audio-editorial-parakeet:sha-<40-char-sha>
-```
-
-Use the SHA tag in Runpod/Vast jobs. `main` is only a convenience tag.
-
-## HF artifact convention
-
-```text
-runs/<provider>-<github-run-id>-<attempt>/
-  environment.json
-  ...
-  _SUCCESS.json
-```
-
-Never let multiple workers overwrite a shared `latest.parquet`.
+    runpod:
+      gpu_ids:
+        - NVIDIA RTX A5000
+        - NVIDIA GeForce RTX 3090
+        - NVIDIA GeForce RTX 4090
+      max_dph: 0.35
 
 ```
 
-## `infra/README.md`
-
-```markdown
-# Cloud infrastructure
-
-## Contract
-
-Both Runpod and Vast execute the same immutable GHCR image and write durable
-artifacts to the same Hugging Face Storage Bucket.
-
-Common paths:
-
-```text
-HF_ROOT=/mnt/hf
-/workspace/cache            provider-local cache
-/mnt/hf/runs/<RUN_ID>/      durable per-run result
-```
-
-Do not use HF Storage Buckets as a distributed lock. Use unique `RUN_ID`s.
-
-## Runpod
-
-CI uses the official REST API under `https://rest.runpod.io/v1`.
-For local interactive administration you can also use `runpodctl`.
-
-```bash
-bash <(curl -sL cli.runpod.io)
-runpodctl config --apiKey "$RUNPOD_API_KEY"
-runpodctl gpu list
-runpodctl pod list --all
-```
-
-## Vast
-
-```bash
-pip install --upgrade vastai
-vastai set api-key "$VAST_API_KEY"
-
-vastai search offers \
-  'gpu_ram>=48000 num_gpus=1 reliability>0.98 verified=true rentable=true' \
-  --order=dph_total
-
-vastai show instances
-```
-
-## Hugging Face
-
-HF Jobs is used for deterministic validation and golden evaluation.
-
-```bash
-pip install --upgrade 'huggingface_hub>=1.8.0'
-hf jobs run \
-  -v hf://buckets/YOUR_ORG/audio-editorial-data:/mnt/hf \
-  IMAGE COMMAND...
-```
-
-```
-
-## `deploy/common/mount_hf.sh`
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-: "${HF_TOKEN:?HF_TOKEN is required}"
-: "${HF_BUCKET:?HF_BUCKET is required}"
-
-HF_ROOT="${HF_ROOT:-/mnt/hf}"
-HF_MOUNT_CACHE_DIR="${HF_MOUNT_CACHE_DIR:-/workspace/cache/hf-mount}"
-HF_MOUNT_CACHE_SIZE="${HF_MOUNT_CACHE_SIZE:-30000000000}"
-
-mkdir -p "$HF_ROOT" "$HF_MOUNT_CACHE_DIR"
-
-if ! command -v hf-mount >/dev/null 2>&1; then
-  echo "[mount_hf] installing hf-mount"
-  curl -fsSL https://raw.githubusercontent.com/huggingface/hf-mount/main/install.sh | sh
-  export PATH="$HOME/.local/bin:$PATH"
-fi
-
-hf-mount stop "$HF_ROOT" >/dev/null 2>&1 || true
-
-hf-mount start \
-  --hf-token "$HF_TOKEN" \
-  --cache-dir "$HF_MOUNT_CACHE_DIR" \
-  --cache-size "$HF_MOUNT_CACHE_SIZE" \
-  bucket "$HF_BUCKET" \
-  "$HF_ROOT"
-
-hf-mount status
-
-```
-
-## `deploy/common/run_cloud_job.sh`
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-: "${JOB_KIND:?JOB_KIND is required}"
-: "${RUN_ID:?RUN_ID is required}"
-: "${HF_BUCKET:?HF_BUCKET is required}"
-
-export HF_ROOT="${HF_ROOT:-/mnt/hf}"
-export HF_HOME="${HF_HOME:-/workspace/cache/huggingface}"
-export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME}"
-export NEMO_CACHE_DIR="${NEMO_CACHE_DIR:-/workspace/cache/nemo}"
-export TORCH_HOME="${TORCH_HOME:-/workspace/cache/torch}"
-export PROVIDER="${PROVIDER:-unknown}"
-
-mkdir -p /workspace/cache /workspace/checkpoints-local
-
-/app/deploy/common/mount_hf.sh
-
-RUN_ROOT="$HF_ROOT/runs/$RUN_ID"
-mkdir -p "$RUN_ROOT"
-
-cat > "$RUN_ROOT/environment.json" <<EOF
-{
-  "run_id": "$RUN_ID",
-  "provider": "$PROVIDER",
-  "job_kind": "$JOB_KIND",
-  "git_sha": "${GIT_SHA:-unknown}",
-  "image": "${IMAGE_REF:-unknown}",
-  "parakeet_model": "${PARAKEET_MODEL:-nvidia/parakeet-tdt_ctc-0.6b-ja}",
-  "stepaudio_model": "${STEPAUDIO_MODEL:-stepfun-ai/Step-Audio-2-mini}"
-}
-EOF
-
-status=0
-
-case "$JOB_KIND" in
-  smoke)
-    python /app/scripts/check_environment.py | tee "$RUN_ROOT/environment-check.json"
-    ;;
-
-  teacher)
-    : "${AUDIO_REL:?AUDIO_REL is required}"
-    : "${SEGMENTS_REL:?SEGMENTS_REL is required}"
-
-    python /app/scripts/run_teacher.py \
-      --audio "$HF_ROOT/$AUDIO_REL" \
-      --segments "$HF_ROOT/$SEGMENTS_REL" \
-      --output "$RUN_ROOT/teacher.parquet" \
-      --model "${STEPAUDIO_MODEL:-stepfun-ai/Step-Audio-2-mini}"
-    ;;
-
-  context-train)
-    : "${TRAIN_REL:?TRAIN_REL is required}"
-    : "${VALID_REL:?VALID_REL is required}"
-
-    python /app/scripts/train_context.py \
-      --train "$HF_ROOT/$TRAIN_REL" \
-      --valid "$HF_ROOT/$VALID_REL" \
-      --output-dir /workspace/checkpoints-local/context \
-      --epochs "${EPOCHS:-10}"
-
-    mkdir -p "$RUN_ROOT/checkpoints/context"
-    cp -a /workspace/checkpoints-local/context/. "$RUN_ROOT/checkpoints/context/"
-    ;;
-
-  editorial-train)
-    : "${TRAIN_REL:?TRAIN_REL is required}"
-    : "${VALID_REL:?VALID_REL is required}"
-
-    python /app/scripts/train_editorial.py \
-      --train "$HF_ROOT/$TRAIN_REL" \
-      --valid "$HF_ROOT/$VALID_REL" \
-      --output-dir /workspace/checkpoints-local/editorial \
-      --epochs "${EPOCHS:-10}"
-
-    mkdir -p "$RUN_ROOT/checkpoints/editorial"
-    cp -a /workspace/checkpoints-local/editorial/. "$RUN_ROOT/checkpoints/editorial/"
-    ;;
-
-  *)
-    echo "Unknown JOB_KIND=$JOB_KIND" >&2
-    status=2
-    ;;
-esac
-
-if [ "$status" -eq 0 ]; then
-  cat > "$RUN_ROOT/_SUCCESS.json" <<EOF
-{"run_id":"$RUN_ID","provider":"$PROVIDER","job_kind":"$JOB_KIND","status":"success"}
-EOF
-else
-  cat > "$RUN_ROOT/_FAILED.json" <<EOF
-{"run_id":"$RUN_ID","provider":"$PROVIDER","job_kind":"$JOB_KIND","status":"failed","exit_code":$status}
-EOF
-fi
-
-exit "$status"
-
-```
-
-## `infra/runpod/create_job.py`
+## `infra/cost_router/select_provider.py`
 
 ```python
 #!/usr/bin/env python3
 """
-Create a one-shot Runpod Pod using the official REST API.
+Cost-aware GPU provider selector.
 
-The Pod starts /app/deploy/common/run_cloud_job.sh and is expected to write
-its durable outputs to hf://buckets/<HF_BUCKET>/runs/<RUN_ID>/.
+Inputs:
+  - configs/cost-router.yaml
+  - VAST_API_KEY
+  - RUNPOD_API_KEY
 
-This command prints the Pod ID to stdout.
+Outputs JSON to stdout:
+{
+  "provider": "vast" | "runpod",
+  "profile": "teacher" | "student",
+  "price_usd_per_hour": 0.31,
+  ...
+}
+
+Selection policy:
+1. Validate the workload profile.
+2. Query Vast using:
+     VAST_GPU_QUERY
+     + disk_space >= VAST_DISK_GB
+     + dph_total <= VAST_MAX_DPH
+3. Query Runpod candidate GPU IDs using the official GraphQL API.
+4. Reject unavailable or over-ceiling candidates.
+5. Select the lowest-priced valid provider.
+6. If prices differ by <= tolerance, prefer Runpod because it is the stable
+   fallback provider; change PREFER_ON_TIE to "vast" if desired.
+
+Notes:
+- Vast dph_total includes the configured storage quantity used in the offer
+  search.
+- Runpod lowestPrice.uninterruptablePrice is the Pod GPU price returned by
+  Runpod. This router intentionally configures Runpod volume_gb=0 by default,
+  because HF Bucket is the persistent source of truth.
 """
 
 from __future__ import annotations
@@ -348,275 +93,522 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
+import urllib.error
 import urllib.request
+from pathlib import Path
+from typing import Any
+
+import yaml
 
 
-API = "https://rest.runpod.io/v1"
+RUNPOD_GRAPHQL = "https://api.runpod.io/graphql"
+PREFER_ON_TIE = "runpod"
 
 
-def request(method: str, path: str, token: str, payload=None):
-    data = None
-    headers = {"Authorization": f"Bearer {token}"}
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
+class RouterError(RuntimeError):
+    pass
 
-    req = urllib.request.Request(
-        f"{API}{path}",
-        data=data,
-        headers=headers,
-        method=method,
+
+def load_config(path: str) -> dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def as_float(value: Any, name: str) -> float:
+    try:
+        value = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RouterError(f"{name} must be numeric") from exc
+    if value <= 0:
+        raise RouterError(f"{name} must be > 0")
+    return value
+
+
+def run_vast_search(
+    *,
+    api_key: str,
+    gpu_query: str,
+    disk_gb: float,
+    max_dph: float,
+) -> dict[str, Any] | None:
+    effective_query = (
+        f"{gpu_query} "
+        f"disk_space>={disk_gb:g} "
+        f"dph_total<={max_dph:g}"
     )
-    with urllib.request.urlopen(req) as resp:
-        body = resp.read()
-        return json.loads(body) if body else None
 
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--image", required=True)
-    parser.add_argument("--gpu", action="append", required=True)
-    parser.add_argument("--name", required=True)
-    parser.add_argument("--cloud-type", default="SECURE", choices=["SECURE", "COMMUNITY"])
-    parser.add_argument("--container-disk", type=int, default=100)
-    parser.add_argument("--volume", type=int, default=150)
-    parser.add_argument("--interruptible", action="store_true")
-    parser.add_argument("--registry-auth-id")
-    args = parser.parse_args()
-
-    token = os.environ["RUNPOD_API_KEY"]
-
-    env_names = [
-        "HF_TOKEN",
-        "HF_BUCKET",
-        "HF_ROOT",
-        "HF_HOME",
-        "NEMO_CACHE_DIR",
-        "TORCH_HOME",
-        "HF_MOUNT_CACHE_DIR",
-        "HF_MOUNT_CACHE_SIZE",
-        "JOB_KIND",
-        "RUN_ID",
-        "GIT_SHA",
-        "IMAGE_REF",
-        "PARAKEET_MODEL",
-        "STEPAUDIO_MODEL",
-        "AUDIO_REL",
-        "SEGMENTS_REL",
-        "TRAIN_REL",
-        "VALID_REL",
-        "EPOCHS",
+    cmd = [
+        "vastai",
+        "search",
+        "offers",
+        effective_query,
+        "--order=dph_total",
+        "--storage",
+        f"{disk_gb:g}",
+        "--limit",
+        "20",
+        "--raw",
+        "--api-key",
+        api_key,
     ]
-    env = {k: os.environ[k] for k in env_names if os.environ.get(k)}
-    env["PROVIDER"] = "runpod"
 
-    payload = {
-        "name": args.name,
-        "imageName": args.image,
-        "gpuTypeIds": args.gpu,
-        "gpuTypePriority": "availability",
-        "gpuCount": 1,
-        "cloudType": args.cloud_type,
-        "computeType": "GPU",
-        "containerDiskInGb": args.container_disk,
-        "volumeInGb": args.volume,
-        "volumeMountPath": "/workspace",
-        "interruptible": args.interruptible,
-        "allowedCudaVersions": ["13.0", "12.9", "12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1"],
-        "env": env,
-        "dockerEntrypoint": ["/bin/bash", "-lc"],
-        "dockerStartCmd": ["/app/deploy/common/run_cloud_job.sh"],
+    proc = subprocess.run(
+        cmd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    if proc.returncode != 0:
+        return {
+            "available": False,
+            "error": "vast_search_failed",
+            "detail": proc.stderr.strip(),
+            "effective_query": effective_query,
+        }
+
+    try:
+        offers = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        return {
+            "available": False,
+            "error": "vast_invalid_json",
+            "detail": str(exc),
+            "effective_query": effective_query,
+        }
+
+    if isinstance(offers, dict):
+        offers = offers.get("offers", [])
+
+    if not offers:
+        return {
+            "available": False,
+            "error": "no_offer_under_ceiling",
+            "effective_query": effective_query,
+        }
+
+    offer = offers[0]
+    price = offer.get("dph_total")
+
+    if price is None:
+        return {
+            "available": False,
+            "error": "vast_offer_missing_dph_total",
+            "effective_query": effective_query,
+        }
+
+    price = float(price)
+    if price > max_dph + 1e-9:
+        return {
+            "available": False,
+            "error": "vast_price_safety_check_failed",
+            "effective_query": effective_query,
+            "observed_price": price,
+        }
+
+    return {
+        "available": True,
+        "provider": "vast",
+        "offer_id": str(offer["id"]),
+        "gpu_id": str(offer.get("gpu_name", "unknown")),
+        "gpu_ram_mb": offer.get("gpu_ram"),
+        "price_usd_per_hour": price,
+        "reliability": offer.get("reliability"),
+        "disk_space_gb": offer.get("disk_space"),
+        "effective_query": effective_query,
     }
-    if args.registry_auth_id:
-        payload["containerRegistryAuthId"] = args.registry_auth_id
-
-    pod = request("POST", "/pods", token, payload)
-    pod_id = pod["id"]
-    print(pod_id)
 
 
-if __name__ == "__main__":
-    main()
+def graphql(api_key: str, query: str) -> dict[str, Any]:
+    body = json.dumps({"query": query}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{RUNPOD_GRAPHQL}?api_key={api_key}",
+        data=body,
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
 
-```
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read())
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RouterError(f"Runpod GraphQL request failed: {exc}") from exc
 
-## `infra/runpod/delete_job.py`
+    if payload.get("errors"):
+        raise RouterError(f"Runpod GraphQL error: {payload['errors']}")
 
-```python
-#!/usr/bin/env python3
-from __future__ import annotations
-
-import argparse
-import os
-import urllib.request
+    return payload["data"]
 
 
-def main():
+def escape_graphql(value: str) -> str:
+    return json.dumps(value)
+
+
+def query_runpod_gpu(
+    *,
+    api_key: str,
+    gpu_id: str,
+    cloud_type: str,
+) -> dict[str, Any] | None:
+    cloud_type = cloud_type.upper()
+
+    if cloud_type == "SECURE":
+        cloud_filter = ", secureCloud: true"
+    elif cloud_type == "COMMUNITY":
+        cloud_filter = ", secureCloud: false"
+    elif cloud_type == "ALL":
+        cloud_filter = ""
+    else:
+        raise RouterError(
+            "runpod_cloud_type must be SECURE, COMMUNITY, or ALL"
+        )
+
+    query = f"""
+    query {{
+      gpuTypes(input: {{ id: {escape_graphql(gpu_id)} }}) {{
+        id
+        displayName
+        memoryInGb
+        secureCloud
+        communityCloud
+        lowestPrice(input: {{ gpuCount: 1{cloud_filter} }}) {{
+          stockStatus
+          uninterruptablePrice
+          availableGpuCounts
+        }}
+      }}
+    }}
+    """
+
+    data = graphql(api_key, query)
+    items = data.get("gpuTypes") or []
+    if not items:
+        return None
+
+    item = items[0]
+    lowest = item.get("lowestPrice")
+    if not lowest:
+        return None
+
+    price = lowest.get("uninterruptablePrice")
+    stock = lowest.get("stockStatus")
+    counts = lowest.get("availableGpuCounts") or []
+
+    if price is None:
+        return None
+
+    # Runpod documents stockStatus values including High/Medium/Low/None.
+    available = stock not in (None, "None") and 1 in counts
+
+    return {
+        "available": available,
+        "provider": "runpod",
+        "gpu_id": item["id"],
+        "gpu_name": item.get("displayName"),
+        "memory_gb": item.get("memoryInGb"),
+        "price_usd_per_hour": float(price),
+        "stock_status": stock,
+        "available_gpu_counts": counts,
+        "cloud_type": cloud_type,
+    }
+
+
+def best_runpod_candidate(
+    *,
+    api_key: str,
+    gpu_ids: list[str],
+    cloud_type: str,
+    max_dph: float,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    inspected = []
+
+    for gpu_id in gpu_ids:
+        try:
+            candidate = query_runpod_gpu(
+                api_key=api_key,
+                gpu_id=gpu_id,
+                cloud_type=cloud_type,
+            )
+        except Exception as exc:
+            inspected.append(
+                {
+                    "provider": "runpod",
+                    "gpu_id": gpu_id,
+                    "available": False,
+                    "error": str(exc),
+                }
+            )
+            continue
+
+        if candidate is None:
+            inspected.append(
+                {
+                    "provider": "runpod",
+                    "gpu_id": gpu_id,
+                    "available": False,
+                    "error": "no_pricing_or_gpu_type",
+                }
+            )
+            continue
+
+        candidate["within_ceiling"] = (
+            candidate["price_usd_per_hour"] <= max_dph + 1e-9
+        )
+        inspected.append(candidate)
+
+    valid = [
+        x
+        for x in inspected
+        if x.get("available")
+        and x.get("within_ceiling")
+        and "price_usd_per_hour" in x
+    ]
+
+    if not valid:
+        return None, inspected
+
+    valid.sort(key=lambda x: x["price_usd_per_hour"])
+    return valid[0], inspected
+
+
+def choose(
+    *,
+    vast: dict[str, Any] | None,
+    runpod: dict[str, Any] | None,
+    tolerance: float,
+) -> tuple[dict[str, Any], str]:
+    vast_ok = bool(vast and vast.get("available"))
+    runpod_ok = bool(runpod and runpod.get("available"))
+
+    if vast_ok and not runpod_ok:
+        return vast, "only_vast_available"
+
+    if runpod_ok and not vast_ok:
+        return runpod, "only_runpod_available"
+
+    if not vast_ok and not runpod_ok:
+        raise RouterError(
+            "No provider satisfies availability and price ceilings"
+        )
+
+    vast_price = float(vast["price_usd_per_hour"])
+    runpod_price = float(runpod["price_usd_per_hour"])
+
+    if abs(vast_price - runpod_price) <= tolerance:
+        if PREFER_ON_TIE == "runpod":
+            return runpod, "price_tie_prefer_runpod"
+        return vast, "price_tie_prefer_vast"
+
+    if vast_price < runpod_price:
+        return vast, "vast_is_cheaper"
+
+    return runpod, "runpod_is_cheaper"
+
+
+def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("pod_id")
+    parser.add_argument("--profile", choices=["teacher", "student"], required=True)
+    parser.add_argument(
+        "--config",
+        default="configs/cost-router.yaml",
+    )
     args = parser.parse_args()
 
-    req = urllib.request.Request(
-        f"https://rest.runpod.io/v1/pods/{args.pod_id}",
-        headers={"Authorization": f"Bearer {os.environ['RUNPOD_API_KEY']}"},
-        method="DELETE",
+    config = load_config(args.config)
+    defaults = config["defaults"]
+    profile = config["profiles"][args.profile]
+
+    vast_api_key = os.environ["VAST_API_KEY"]
+    runpod_api_key = os.environ["RUNPOD_API_KEY"]
+
+    # Repository variables can override committed defaults.
+    prefix = args.profile.upper()
+
+    vast_gpu_query = os.environ.get(
+        f"VAST_{prefix}_GPU_QUERY",
+        profile["vast"]["gpu_query"],
     )
-    with urllib.request.urlopen(req) as resp:
-        if resp.status != 204:
-            raise SystemExit(f"Unexpected status: {resp.status}")
+    vast_max_dph = as_float(
+        os.environ.get(
+            f"VAST_{prefix}_MAX_DPH",
+            profile["vast"]["max_dph"],
+        ),
+        f"VAST_{prefix}_MAX_DPH",
+    )
+
+    runpod_gpu_ids_raw = os.environ.get(
+        f"RUNPOD_{prefix}_GPU_IDS",
+        "",
+    )
+    runpod_gpu_ids = (
+        [x.strip() for x in runpod_gpu_ids_raw.split(",") if x.strip()]
+        if runpod_gpu_ids_raw
+        else list(profile["runpod"]["gpu_ids"])
+    )
+
+    runpod_max_dph = as_float(
+        os.environ.get(
+            f"RUNPOD_{prefix}_MAX_DPH",
+            profile["runpod"]["max_dph"],
+        ),
+        f"RUNPOD_{prefix}_MAX_DPH",
+    )
+
+    vast_disk_gb = as_float(
+        os.environ.get(
+            f"VAST_{prefix}_DISK_GB",
+            defaults["vast_disk_gb"],
+        ),
+        f"VAST_{prefix}_DISK_GB",
+    )
+
+    cloud_type = os.environ.get(
+        "RUNPOD_CLOUD_TYPE",
+        defaults["runpod_cloud_type"],
+    )
+
+    tolerance = float(
+        os.environ.get(
+            "COST_ROUTER_PRICE_TOLERANCE",
+            defaults["price_tolerance_usd_per_hour"],
+        )
+    )
+
+    vast = run_vast_search(
+        api_key=vast_api_key,
+        gpu_query=vast_gpu_query,
+        disk_gb=vast_disk_gb,
+        max_dph=vast_max_dph,
+    )
+
+    runpod, runpod_inspected = best_runpod_candidate(
+        api_key=runpod_api_key,
+        gpu_ids=runpod_gpu_ids,
+        cloud_type=cloud_type,
+        max_dph=runpod_max_dph,
+    )
+
+    selected, reason = choose(
+        vast=vast,
+        runpod=runpod,
+        tolerance=tolerance,
+    )
+
+    output = {
+        "profile": args.profile,
+        "provider": selected["provider"],
+        "reason": reason,
+        "price_usd_per_hour": selected["price_usd_per_hour"],
+        "selected": selected,
+        "vast": vast,
+        "runpod": runpod,
+        "runpod_inspected": runpod_inspected,
+        "ceilings": {
+            "vast_max_dph": vast_max_dph,
+            "runpod_max_dph": runpod_max_dph,
+        },
+    }
+
+    print(json.dumps(output, ensure_ascii=False))
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "error": type(exc).__name__,
+                    "message": str(exc),
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        raise
 
 ```
 
-## `infra/vast/create_job.sh`
+## `infra/cost_router/requirements.txt`
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-: "${VAST_API_KEY:?VAST_API_KEY is required}"
-: "${IMAGE_REF:?IMAGE_REF is required}"
-: "${JOB_KIND:?JOB_KIND is required}"
-: "${RUN_ID:?RUN_ID is required}"
-: "${HF_TOKEN:?HF_TOKEN is required}"
-: "${HF_BUCKET:?HF_BUCKET is required}"
-
-GPU_QUERY="${VAST_GPU_QUERY:-gpu_ram>=48000 num_gpus=1 reliability>0.98 verified=true rentable=true}"
-DISK_GB="${VAST_DISK_GB:-150}"
-LABEL="${VAST_LABEL:-audio-editorial-${JOB_KIND}-${RUN_ID}}"
-
-python -m pip install --quiet --upgrade vastai
-
-offers="$(vastai search offers "$GPU_QUERY" --order=dph_total --storage "$DISK_GB" --raw --api-key "$VAST_API_KEY")"
-
-offer_id="$(
-python - "$offers" <<'PY'
-import json, sys
-obj=json.loads(sys.argv[1])
-if not obj:
-    raise SystemExit("No Vast offer matched")
-print(obj[0]["id"])
-PY
-)"
-
-env_args=(
-  "-e HF_TOKEN=$HF_TOKEN"
-  "-e HF_BUCKET=$HF_BUCKET"
-  "-e HF_ROOT=${HF_ROOT:-/mnt/hf}"
-  "-e HF_HOME=${HF_HOME:-/workspace/cache/huggingface}"
-  "-e NEMO_CACHE_DIR=${NEMO_CACHE_DIR:-/workspace/cache/nemo}"
-  "-e TORCH_HOME=${TORCH_HOME:-/workspace/cache/torch}"
-  "-e JOB_KIND=$JOB_KIND"
-  "-e RUN_ID=$RUN_ID"
-  "-e PROVIDER=vast"
-  "-e GIT_SHA=${GIT_SHA:-unknown}"
-  "-e IMAGE_REF=$IMAGE_REF"
-  "-e PARAKEET_MODEL=${PARAKEET_MODEL:-nvidia/parakeet-tdt_ctc-0.6b-ja}"
-  "-e STEPAUDIO_MODEL=${STEPAUDIO_MODEL:-stepfun-ai/Step-Audio-2-mini}"
-)
-
-for k in AUDIO_REL SEGMENTS_REL TRAIN_REL VALID_REL EPOCHS; do
-  if [ -n "${!k:-}" ]; then
-    env_args+=("-e $k=${!k}")
-  fi
-done
-
-env_string="${env_args[*]}"
-
-result="$(
-  vastai create instance "$offer_id" \
-    --image "$IMAGE_REF" \
-    --disk "$DISK_GB" \
-    --label "$LABEL" \
-    --env "$env_string" \
-    --entrypoint "/bin/bash" \
-    --args "-lc /app/deploy/common/run_cloud_job.sh" \
-    --raw \
-    --api-key "$VAST_API_KEY"
-)"
-
-instance_id="$(
-python - "$result" <<'PY'
-import json, sys
-obj=json.loads(sys.argv[1])
-for key in ("new_contract", "id", "instance_id"):
-    if key in obj:
-        print(obj[key])
-        break
-else:
-    raise SystemExit(f"Could not find instance id in: {obj}")
-PY
-)"
-
-echo "$instance_id"
+```text
+PyYAML>=6.0,<7
 
 ```
 
-## `infra/vast/destroy_job.sh`
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-: "${VAST_API_KEY:?VAST_API_KEY is required}"
-: "${1:?instance id is required}"
-
-python -m pip install --quiet --upgrade vastai
-vastai destroy instance "$1" --api-key "$VAST_API_KEY"
-
-```
-
-## `infra/hf/run_eval_job.sh`
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-: "${HF_TOKEN:?HF_TOKEN is required}"
-: "${HF_BUCKET:?HF_BUCKET is required}"
-: "${EVAL_IMAGE:?EVAL_IMAGE is required}"
-: "${PREDICTIONS_REL:?PREDICTIONS_REL is required}"
-: "${REFERENCES_REL:?REFERENCES_REL is required}"
-: "${OUTPUT_REL:?OUTPUT_REL is required}"
-
-python -m pip install --quiet --upgrade "huggingface_hub>=1.8.0"
-
-hf jobs run \
-  --flavor "${HF_JOB_FLAVOR:-cpu-upgrade}" \
-  --secrets HF_TOKEN="$HF_TOKEN" \
-  -v "hf://buckets/$HF_BUCKET:/mnt/hf" \
-  "$EVAL_IMAGE" \
-  python /app/scripts/evaluate_editorial.py \
-    --predictions "/mnt/hf/$PREDICTIONS_REL" \
-    --references "/mnt/hf/$REFERENCES_REL" \
-    --output "/mnt/hf/$OUTPUT_REL"
-
-```
-
-## `.github/workflows/ci.yml`
+## `.github/workflows/reusable-cost-router.yml`
 
 ```yaml
-name: CI
+name: Reusable Cost Router
 
 on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main, develop]
+  workflow_call:
+    inputs:
+      profile:
+        description: teacher or student
+        type: string
+        required: true
+    outputs:
+      provider:
+        description: Selected GPU provider
+        value: ${{ jobs.route.outputs.provider }}
+      gpu_id:
+        description: Selected GPU/offer identifier
+        value: ${{ jobs.route.outputs.gpu_id }}
+      price:
+        description: Selected USD/hour
+        value: ${{ jobs.route.outputs.price }}
+      vast_offer_id:
+        description: Vast offer ID when Vast is selected
+        value: ${{ jobs.route.outputs.vast_offer_id }}
+      reason:
+        description: Router decision reason
+        value: ${{ jobs.route.outputs.reason }}
+    secrets:
+      VAST_API_KEY:
+        required: true
+      RUNPOD_API_KEY:
+        required: true
 
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  python:
+  route:
     runs-on: ubuntu-latest
+
+    outputs:
+      provider: ${{ steps.route.outputs.provider }}
+      gpu_id: ${{ steps.route.outputs.gpu_id }}
+      price: ${{ steps.route.outputs.price }}
+      vast_offer_id: ${{ steps.route.outputs.vast_offer_id }}
+      reason: ${{ steps.route.outputs.reason }}
+
+    env:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+
+      # Workload-specific repository variables.
+      VAST_TEACHER_GPU_QUERY: ${{ vars.VAST_TEACHER_GPU_QUERY }}
+      VAST_TEACHER_MAX_DPH: ${{ vars.VAST_TEACHER_MAX_DPH }}
+      VAST_TEACHER_DISK_GB: ${{ vars.VAST_TEACHER_DISK_GB }}
+
+      VAST_STUDENT_GPU_QUERY: ${{ vars.VAST_STUDENT_GPU_QUERY }}
+      VAST_STUDENT_MAX_DPH: ${{ vars.VAST_STUDENT_MAX_DPH }}
+      VAST_STUDENT_DISK_GB: ${{ vars.VAST_STUDENT_DISK_GB }}
+
+      RUNPOD_TEACHER_GPU_IDS: ${{ vars.RUNPOD_TEACHER_GPU_IDS }}
+      RUNPOD_TEACHER_MAX_DPH: ${{ vars.RUNPOD_TEACHER_MAX_DPH }}
+
+      RUNPOD_STUDENT_GPU_IDS: ${{ vars.RUNPOD_STUDENT_GPU_IDS }}
+      RUNPOD_STUDENT_MAX_DPH: ${{ vars.RUNPOD_STUDENT_MAX_DPH }}
+
+      RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE }}
+      COST_ROUTER_PRICE_TOLERANCE: ${{ vars.COST_ROUTER_PRICE_TOLERANCE }}
+
     steps:
       - uses: actions/checkout@v6
 
@@ -624,213 +616,226 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: python -m pip install --upgrade pip
-      - run: pip install -e . pytest
-
-      - name: Compile
-        run: python -m compileall src scripts infra
-
-      - name: Test
-        run: pytest -q
-
-      - name: Validate shell scripts
+      - name: Install router dependencies
         run: |
-          bash -n deploy/common/mount_hf.sh
-          bash -n deploy/common/run_cloud_job.sh
-          bash -n infra/vast/create_job.sh
-          bash -n infra/vast/destroy_job.sh
-          bash -n infra/hf/run_eval_job.sh
+          python -m pip install --upgrade pip
+          pip install -r infra/cost_router/requirements.txt
+          pip install --upgrade vastai
+
+      - name: Select cheapest valid provider
+        id: route
+        shell: bash
+        run: |
+          result="$(
+            python infra/cost_router/select_provider.py \
+              --profile '${{ inputs.profile }}'
+          )"
+
+          echo "$result" | python -m json.tool
+
+          provider="$(echo "$result" | jq -r '.provider')"
+          price="$(echo "$result" | jq -r '.price_usd_per_hour')"
+          reason="$(echo "$result" | jq -r '.reason')"
+          gpu_id="$(echo "$result" | jq -r '.selected.gpu_id // empty')"
+          vast_offer_id="$(echo "$result" | jq -r '.selected.offer_id // empty')"
+
+          echo "provider=$provider" >> "$GITHUB_OUTPUT"
+          echo "price=$price" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "gpu_id=$gpu_id" >> "$GITHUB_OUTPUT"
+          echo "vast_offer_id=$vast_offer_id" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Cost Router"
+            echo ""
+            echo "- Profile: \`${{ inputs.profile }}\`"
+            echo "- Provider: \`$provider\`"
+            echo "- GPU: \`$gpu_id\`"
+            echo "- Price: \`$price USD/h\`"
+            echo "- Reason: \`$reason\`"
+            echo ""
+            echo "<details><summary>Full routing decision</summary>"
+            echo ""
+            echo '```json'
+            echo "$result" | jq .
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
 
 ```
 
-## `.github/workflows/images.yml`
+## `.github/workflows/teacher-job.yml`
 
 ```yaml
-name: Build GHCR Images
-
-on:
-  push:
-    branches: [main]
-    paths:
-      - "docker/**"
-      - "src/**"
-      - "scripts/**"
-      - "deploy/**"
-      - "pyproject.toml"
-      - ".github/workflows/images.yml"
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  packages: write
-  attestations: write
-  id-token: write
-
-concurrency:
-  group: images-${{ github.ref }}
-  cancel-in-progress: false
-
-env:
-  REGISTRY: ghcr.io
-
-jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: parakeet
-            dockerfile: docker/parakeet/Dockerfile
-          - name: stepaudio
-            dockerfile: docker/stepaudio/Dockerfile
-          - name: train
-            dockerfile: docker/train/Dockerfile
-          - name: eval
-            dockerfile: docker/eval/Dockerfile
-
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/audio-editorial-${{ matrix.name }}
-          tags: |
-            type=sha,prefix=sha-,format=long
-            type=raw,value=main,enable={{is_default_branch}}
-          labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-
-      - name: Build and push
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
-
-      - name: Attest image provenance
-        uses: actions/attest@v4
-        with:
-          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/audio-editorial-${{ matrix.name }}
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
-
-```
-
-## `.github/workflows/gpu-job.yml`
-
-```yaml
-name: GPU Job
+name: Teacher GPU Job
 
 on:
   workflow_dispatch:
     inputs:
-      provider:
-        description: GPU provider
-        type: choice
-        required: true
-        options:
-          - runpod
-          - vast
-      job_kind:
-        description: Job to execute
-        type: choice
-        required: true
-        options:
-          - smoke
-          - teacher
-          - context-train
-          - editorial-train
-      image_kind:
-        description: GHCR image family
-        type: choice
-        required: true
-        options:
-          - stepaudio
-          - train
       image_tag:
-        description: Immutable image tag; normally sha-<40-char-git-sha>
+        description: Immutable Step-Audio GHCR tag
         required: true
       audio_rel:
-        description: HF Bucket relative audio path for teacher
-        required: false
-        default: ""
-      segments_rel:
-        description: HF Bucket relative ASR segments path for teacher
-        required: false
-        default: ""
-      train_rel:
-        description: HF Bucket train.parquet relative path
-        required: false
-        default: ""
-      valid_rel:
-        description: HF Bucket validation.parquet relative path
-        required: false
-        default: ""
-      epochs:
-        description: Training epochs
-        required: false
-        default: "10"
-      interruptible:
-        description: Allow interruptible/spot capacity where supported
-        type: boolean
+        description: HF Bucket relative audio path
         required: true
-        default: false
+      segments_rel:
+        description: HF Bucket relative Parakeet segments path
+        required: true
 
 permissions:
   contents: read
   packages: read
 
 concurrency:
-  group: gpu-${{ inputs.provider }}-${{ inputs.job_kind }}
+  group: teacher-gpu
   cancel-in-progress: false
 
 jobs:
+  route:
+    uses: ./.github/workflows/reusable-cost-router.yml
+    with:
+      profile: teacher
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+
   launch:
+    needs: route
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: gpu-${{ inputs.provider }}
+    environment: gpu-auto
 
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       HF_BUCKET: ${{ vars.HF_BUCKET }}
-      HF_ROOT: /mnt/hf
-      HF_HOME: /workspace/cache/huggingface
-      NEMO_CACHE_DIR: /workspace/cache/nemo
-      TORCH_HOME: /workspace/cache/torch
-
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
       RUNPOD_REGISTRY_AUTH_ID: ${{ vars.RUNPOD_REGISTRY_AUTH_ID }}
       RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE || 'SECURE' }}
 
-      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
-      VAST_GPU_QUERY: ${{ vars.VAST_GPU_QUERY || 'gpu_ram>=48000 num_gpus=1 reliability>0.98 verified=true rentable=true' }}
-      VAST_DISK_GB: ${{ vars.VAST_DISK_GB || '150' }}
-
-      JOB_KIND: ${{ inputs.job_kind }}
-      RUN_ID: ${{ inputs.provider }}-${{ github.run_id }}-${{ github.run_attempt }}
+      JOB_KIND: teacher
+      RUN_ID: teacher-${{ github.run_id }}-${{ github.run_attempt }}
       GIT_SHA: ${{ github.sha }}
+
       AUDIO_REL: ${{ inputs.audio_rel }}
       SEGMENTS_REL: ${{ inputs.segments_rel }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build image reference
+        shell: bash
+        run: |
+          IMAGE_REF="ghcr.io/${GITHUB_REPOSITORY_OWNER}/audio-editorial-stepaudio:${{ inputs.image_tag }}"
+          echo "IMAGE_REF=${IMAGE_REF,,}" >> "$GITHUB_ENV"
+
+      - name: Launch Vast
+        if: needs.route.outputs.provider == 'vast'
+        shell: bash
+        env:
+          VAST_OFFER_ID: ${{ needs.route.outputs.vast_offer_id }}
+          VAST_DISK_GB: ${{ vars.VAST_TEACHER_DISK_GB || '150' }}
+        run: |
+          instance_id="$(bash infra/vast/create_job.sh)"
+          echo "Vast instance: $instance_id" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Launch Runpod
+        if: needs.route.outputs.provider == 'runpod'
+        shell: bash
+        env:
+          RUNPOD_GPU_ID: ${{ needs.route.outputs.gpu_id }}
+        run: |
+          args=(
+            --image "$IMAGE_REF"
+            --name "$RUN_ID"
+            --cloud-type "$RUNPOD_CLOUD_TYPE"
+            --gpu "$RUNPOD_GPU_ID"
+            --container-disk 100
+            --volume 0
+          )
+
+          if [ -n "${RUNPOD_REGISTRY_AUTH_ID:-}" ]; then
+            args+=(--registry-auth-id "$RUNPOD_REGISTRY_AUTH_ID")
+          fi
+
+          pod_id="$(python infra/runpod/create_job.py "${args[@]}")"
+          echo "Runpod pod: $pod_id" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cost summary
+        run: |
+          {
+            echo "## Teacher launch"
+            echo "- Provider: \`${{ needs.route.outputs.provider }}\`"
+            echo "- GPU: \`${{ needs.route.outputs.gpu_id }}\`"
+            echo "- Estimated compute price: \`${{ needs.route.outputs.price }} USD/h\`"
+            echo "- Router reason: \`${{ needs.route.outputs.reason }}\`"
+            echo "- HF run path: \`hf://buckets/$HF_BUCKET/runs/$RUN_ID/\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+```
+
+## `.github/workflows/student-job.yml`
+
+```yaml
+name: Student GPU Job
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Student model
+        type: choice
+        required: true
+        options:
+          - context
+          - editorial
+      image_tag:
+        description: Immutable train GHCR tag
+        required: true
+      train_rel:
+        description: HF Bucket relative training parquet
+        required: true
+      valid_rel:
+        description: HF Bucket relative validation parquet
+        required: true
+      epochs:
+        description: Epochs
+        required: true
+        default: "10"
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: student-${{ inputs.model }}
+  cancel-in-progress: false
+
+jobs:
+  route:
+    uses: ./.github/workflows/reusable-cost-router.yml
+    with:
+      profile: student
+    secrets:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+
+  launch:
+    needs: route
+    runs-on: ubuntu-latest
+    environment: gpu-auto
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      RUNPOD_REGISTRY_AUTH_ID: ${{ vars.RUNPOD_REGISTRY_AUTH_ID }}
+      RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE || 'COMMUNITY' }}
+
+      JOB_KIND: ${{ inputs.model == 'context' && 'context-train' || 'editorial-train' }}
+      RUN_ID: student-${{ inputs.model }}-${{ github.run_id }}-${{ github.run_attempt }}
+      GIT_SHA: ${{ github.sha }}
+
       TRAIN_REL: ${{ inputs.train_rel }}
       VALID_REL: ${{ inputs.valid_rel }}
       EPOCHS: ${{ inputs.epochs }}
@@ -838,348 +843,196 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Compose immutable image reference
+      - name: Build image reference
+        shell: bash
         run: |
-          IMAGE_REF="ghcr.io/${GITHUB_REPOSITORY_OWNER}/audio-editorial-${{ inputs.image_kind }}:${{ inputs.image_tag }}"
-          IMAGE_REF="${IMAGE_REF,,}"
-          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
+          IMAGE_REF="ghcr.io/${GITHUB_REPOSITORY_OWNER}/audio-editorial-train:${{ inputs.image_tag }}"
+          echo "IMAGE_REF=${IMAGE_REF,,}" >> "$GITHUB_ENV"
 
-      - name: Validate required inputs
+      - name: Launch Vast
+        if: needs.route.outputs.provider == 'vast'
+        shell: bash
+        env:
+          VAST_OFFER_ID: ${{ needs.route.outputs.vast_offer_id }}
+          VAST_DISK_GB: ${{ vars.VAST_STUDENT_DISK_GB || '100' }}
         run: |
-          case "$JOB_KIND" in
-            teacher)
-              test -n "$AUDIO_REL"
-              test -n "$SEGMENTS_REL"
-              ;;
-            context-train|editorial-train)
-              test -n "$TRAIN_REL"
-              test -n "$VALID_REL"
-              ;;
-          esac
+          instance_id="$(bash infra/vast/create_job.sh)"
+          echo "Vast instance: $instance_id" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Launch Runpod
-        if: inputs.provider == 'runpod'
-        id: runpod
+        if: needs.route.outputs.provider == 'runpod'
+        shell: bash
         env:
-          INTERRUPTIBLE: ${{ inputs.interruptible }}
+          RUNPOD_GPU_ID: ${{ needs.route.outputs.gpu_id }}
         run: |
           args=(
             --image "$IMAGE_REF"
-            --name "audio-editorial-${JOB_KIND}-${RUN_ID}"
+            --name "$RUN_ID"
             --cloud-type "$RUNPOD_CLOUD_TYPE"
-            --gpu "NVIDIA RTX A6000"
-            --gpu "NVIDIA A40"
-            --gpu "NVIDIA L40S"
+            --gpu "$RUNPOD_GPU_ID"
+            --container-disk 80
+            --volume 0
           )
-
-          if [ "$INTERRUPTIBLE" = "true" ]; then
-            args+=(--interruptible)
-          fi
 
           if [ -n "${RUNPOD_REGISTRY_AUTH_ID:-}" ]; then
             args+=(--registry-auth-id "$RUNPOD_REGISTRY_AUTH_ID")
           fi
 
           pod_id="$(python infra/runpod/create_job.py "${args[@]}")"
-          echo "pod_id=$pod_id" >> "$GITHUB_OUTPUT"
-          echo "Runpod pod: $pod_id"
+          echo "Runpod pod: $pod_id" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Launch Vast
-        if: inputs.provider == 'vast'
-        id: vast
-        run: |
-          instance_id="$(bash infra/vast/create_job.sh)"
-          echo "instance_id=$instance_id" >> "$GITHUB_OUTPUT"
-          echo "Vast instance: $instance_id"
-
-      - name: Write launch summary
+      - name: Cost summary
         run: |
           {
-            echo "## GPU Job launched"
-            echo ""
-            echo "- Provider: \`${{ inputs.provider }}\`"
-            echo "- Job: \`${JOB_KIND}\`"
-            echo "- Run ID: \`${RUN_ID}\`"
-            echo "- Image: \`${IMAGE_REF}\`"
-            echo "- HF result root: \`hf://buckets/${HF_BUCKET}/runs/${RUN_ID}/\`"
-            if [ "${{ inputs.provider }}" = "runpod" ]; then
-              echo "- Runpod Pod ID: \`${{ steps.runpod.outputs.pod_id }}\`"
-            else
-              echo "- Vast Instance ID: \`${{ steps.vast.outputs.instance_id }}\`"
-            fi
+            echo "## Student launch"
+            echo "- Model: \`${{ inputs.model }}\`"
+            echo "- Provider: \`${{ needs.route.outputs.provider }}\`"
+            echo "- GPU: \`${{ needs.route.outputs.gpu_id }}\`"
+            echo "- Estimated compute price: \`${{ needs.route.outputs.price }} USD/h\`"
+            echo "- Router reason: \`${{ needs.route.outputs.reason }}\`"
+            echo "- HF run path: \`hf://buckets/$HF_BUCKET/runs/$RUN_ID/\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
 ```
 
-## `.github/workflows/provider-cleanup.yml`
+## `docs/teacher-student-cost-router.md`
 
-```yaml
-name: Provider Cleanup
+```markdown
+# Teacher / Student Cost Router
 
-on:
-  workflow_dispatch:
-    inputs:
-      provider:
-        type: choice
-        required: true
-        options:
-          - runpod
-          - vast
-      resource_id:
-        description: Runpod Pod ID or Vast Instance ID
-        required: true
+## Goal
 
-permissions:
-  contents: read
+Select the cheapest currently usable GPU provider independently for the two
+workloads.
 
-concurrency:
-  group: cleanup-${{ inputs.provider }}-${{ inputs.resource_id }}
-  cancel-in-progress: false
+```text
+Teacher
+  Step-Audio-2-mini
+  >=48 GB VRAM
+  tighter reliability requirements
 
-jobs:
-  cleanup:
-    runs-on: ubuntu-latest
-    environment: gpu-${{ inputs.provider }}
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Delete Runpod Pod
-        if: inputs.provider == 'runpod'
-        env:
-          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-        run: python infra/runpod/delete_job.py "${{ inputs.resource_id }}"
-
-      - name: Destroy Vast Instance
-        if: inputs.provider == 'vast'
-        env:
-          VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
-        run: bash infra/vast/destroy_job.sh "${{ inputs.resource_id }}"
-
+Student
+  Context / Editorial training
+  >=24 GB VRAM
+  cheap marketplace/consumer GPU acceptable
 ```
 
-## `.github/workflows/hf-eval.yml`
+## Repository variables
 
-```yaml
-name: HF Golden Evaluation
+Recommended initial values:
 
-on:
-  workflow_dispatch:
-    inputs:
-      image_tag:
-        description: eval image tag, normally sha-<git-sha>
-        required: true
-      predictions_rel:
-        description: HF Bucket relative predictions parquet
-        required: true
-      references_rel:
-        description: HF Bucket relative golden/reference parquet
-        required: true
-        default: datasets/golden.parquet
-      output_rel:
-        description: HF Bucket relative output metrics JSON
-        required: true
+```text
+# Vast: Teacher
+VAST_TEACHER_GPU_QUERY=gpu_ram>=48000 num_gpus=1 reliability>0.98 verified=true rentable=true
+VAST_TEACHER_DISK_GB=150
+VAST_TEACHER_MAX_DPH=0.40
 
-permissions:
-  contents: read
+# Vast: Student
+VAST_STUDENT_GPU_QUERY=gpu_ram>=24000 num_gpus=1 reliability>0.98 verified=true rentable=true
+VAST_STUDENT_DISK_GB=100
+VAST_STUDENT_MAX_DPH=0.22
 
-concurrency:
-  group: hf-eval-${{ inputs.predictions_rel }}
-  cancel-in-progress: false
+# Runpod: Teacher
+RUNPOD_TEACHER_GPU_IDS=NVIDIA RTX A6000,NVIDIA A40,NVIDIA L40S,NVIDIA RTX 6000 Ada Generation
+RUNPOD_TEACHER_MAX_DPH=0.55
 
-jobs:
-  evaluate:
-    runs-on: ubuntu-latest
-    environment: hf-evaluation
+# Runpod: Student
+RUNPOD_STUDENT_GPU_IDS=NVIDIA RTX A5000,NVIDIA GeForce RTX 3090,NVIDIA GeForce RTX 4090
+RUNPOD_STUDENT_MAX_DPH=0.35
 
-    env:
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      HF_BUCKET: ${{ vars.HF_BUCKET }}
-      PREDICTIONS_REL: ${{ inputs.predictions_rel }}
-      REFERENCES_REL: ${{ inputs.references_rel }}
-      OUTPUT_REL: ${{ inputs.output_rel }}
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Build eval image reference
-        run: |
-          EVAL_IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER}/audio-editorial-eval:${{ inputs.image_tag }}"
-          EVAL_IMAGE="${EVAL_IMAGE,,}"
-          echo "EVAL_IMAGE=$EVAL_IMAGE" >> "$GITHUB_ENV"
-
-      - name: Run Hugging Face Job
-        run: bash infra/hf/run_eval_job.sh
-
-      - name: Summary
-        run: |
-          {
-            echo "## HF evaluation submitted"
-            echo "- Predictions: \`${PREDICTIONS_REL}\`"
-            echo "- References: \`${REFERENCES_REL}\`"
-            echo "- Output: \`hf://buckets/${HF_BUCKET}/${OUTPUT_REL}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
+# Shared
+RUNPOD_CLOUD_TYPE=SECURE
+COST_ROUTER_PRICE_TOLERANCE=0.01
 ```
 
-## `.github/workflows/provider-ablation.yml`
+The committed `configs/cost-router.yaml` values are defaults. GitHub repository
+variables override them.
 
-```yaml
-name: Provider A/B Smoke
+## Secrets
 
-on:
-  workflow_dispatch:
-    inputs:
-      image_tag:
-        description: Step-Audio image tag
-        required: true
-
-permissions:
-  contents: read
-  packages: read
-
-jobs:
-  runpod:
-    uses: ./.github/workflows/reusable-provider-smoke.yml
-    with:
-      provider: runpod
-      image_tag: ${{ inputs.image_tag }}
-    secrets: inherit
-
-  vast:
-    uses: ./.github/workflows/reusable-provider-smoke.yml
-    with:
-      provider: vast
-      image_tag: ${{ inputs.image_tag }}
-    secrets: inherit
-
+```text
+VAST_API_KEY
+RUNPOD_API_KEY
+HF_TOKEN
 ```
 
-## `.github/workflows/reusable-provider-smoke.yml`
+## Selection algorithm
 
-```yaml
-name: Reusable Provider Smoke
-
-on:
-  workflow_call:
-    inputs:
-      provider:
-        type: string
-        required: true
-      image_tag:
-        type: string
-        required: true
-
-permissions:
-  contents: read
-  packages: read
-
-jobs:
-  launch:
-    runs-on: ubuntu-latest
-    environment: gpu-${{ inputs.provider }}
-
-    env:
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      HF_BUCKET: ${{ vars.HF_BUCKET }}
-      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-      RUNPOD_REGISTRY_AUTH_ID: ${{ vars.RUNPOD_REGISTRY_AUTH_ID }}
-      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
-      VAST_GPU_QUERY: ${{ vars.VAST_GPU_QUERY || 'gpu_ram>=48000 num_gpus=1 reliability>0.98 verified=true rentable=true' }}
-      JOB_KIND: smoke
-      RUN_ID: smoke-${{ inputs.provider }}-${{ github.run_id }}-${{ github.run_attempt }}
-      GIT_SHA: ${{ github.sha }}
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Image ref
-        run: |
-          IMAGE_REF="ghcr.io/${GITHUB_REPOSITORY_OWNER}/audio-editorial-stepaudio:${{ inputs.image_tag }}"
-          IMAGE_REF="${IMAGE_REF,,}"
-          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
-
-      - name: Runpod launch
-        if: inputs.provider == 'runpod'
-        run: |
-          args=(
-            --image "$IMAGE_REF"
-            --name "$RUN_ID"
-            --gpu "NVIDIA RTX A6000"
-            --gpu "NVIDIA A40"
-            --gpu "NVIDIA L40S"
-          )
-          if [ -n "${RUNPOD_REGISTRY_AUTH_ID:-}" ]; then
-            args+=(--registry-auth-id "$RUNPOD_REGISTRY_AUTH_ID")
-          fi
-          python infra/runpod/create_job.py "${args[@]}"
-
-      - name: Vast launch
-        if: inputs.provider == 'vast'
-        run: bash infra/vast/create_job.sh
-
-      - name: Summary
-        run: |
-          echo "Smoke output will be written to hf://buckets/${HF_BUCKET}/runs/${RUN_ID}/" >> "$GITHUB_STEP_SUMMARY"
-
+```text
+                 workload profile
+                  /            \
+             teacher          student
+                |                |
+                v                v
+          Vast 48GB+        Vast 24GB+
+          own ceiling       own ceiling
+                |                |
+                +-------+--------+
+                        |
+                        v
+                 Vast best offer
+                        |
+              +---------+---------+
+              |                   |
+              v                   v
+       Runpod candidate 1   Runpod candidate N
+              |                   |
+              +---------+---------+
+                        |
+                        v
+              cheapest valid Runpod
+                        |
+                        v
+                 compare USD/hour
+                        |
+             +----------+----------+
+             |                     |
+            Vast                 Runpod
 ```
 
-## `.github/workflows/release.yml`
+A provider is valid only if it is available and does not exceed its own price
+ceiling.
 
-```yaml
-name: Release Gate
+If the difference between the two cheapest providers is within
+`COST_ROUTER_PRICE_TOLERANCE`, Runpod is preferred by default because it is the
+stable fallback service. This can be changed in `select_provider.py`.
 
-on:
-  release:
-    types: [published]
-  workflow_dispatch:
-    inputs:
-      image_tag:
-        description: Image tag to evaluate
-        required: true
-      predictions_rel:
-        description: Candidate predictions in HF Bucket
-        required: true
-      references_rel:
-        description: Golden references in HF Bucket
-        required: true
-        default: datasets/golden.parquet
+## Why Runpod volume is zero
 
-permissions:
-  contents: read
+HF Storage Bucket is the persistent source of truth. The cost router therefore
+uses Runpod local/container storage as disposable cache and defaults persistent
+Runpod volume to zero. This also makes the hourly GPU comparison more meaningful.
 
-jobs:
-  gate:
-    runs-on: ubuntu-latest
-    environment: release
+## Workflows
 
-    env:
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      HF_BUCKET: ${{ vars.HF_BUCKET }}
+- `teacher-job.yml`
+  - calls `reusable-cost-router.yml` with `profile=teacher`
+  - starts Step-Audio Teacher on the selected provider.
 
-    steps:
-      - uses: actions/checkout@v6
+- `student-job.yml`
+  - calls the router with `profile=student`
+  - starts Context or Editorial training.
 
-      - name: Resolve image tag
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "IMAGE_TAG=${{ inputs.image_tag }}" >> "$GITHUB_ENV"
-            echo "PREDICTIONS_REL=${{ inputs.predictions_rel }}" >> "$GITHUB_ENV"
-            echo "REFERENCES_REL=${{ inputs.references_rel }}" >> "$GITHUB_ENV"
-          else
-            echo "IMAGE_TAG=sha-${GITHUB_SHA}" >> "$GITHUB_ENV"
-            echo "PREDICTIONS_REL=results/release/${GITHUB_SHA}/candidate.parquet" >> "$GITHUB_ENV"
-            echo "REFERENCES_REL=datasets/golden.parquet" >> "$GITHUB_ENV"
-          fi
+- `reusable-cost-router.yml`
+  - queries Vast and Runpod
+  - returns provider/GPU/price as workflow outputs.
 
-      - name: Submit deterministic HF evaluation
-        env:
-          EVAL_IMAGE: ghcr.io/${{ github.repository_owner }}/audio-editorial-eval:${{ env.IMAGE_TAG }}
-          OUTPUT_REL: results/release/${{ github.sha }}/metrics.json
-        run: bash infra/hf/run_eval_job.sh
+## Failure policy
 
-      - name: Release notes
-        run: |
-          echo "Release evaluation submitted to HF Jobs." >> "$GITHUB_STEP_SUMMARY"
+Routing failure:
+
+```text
+No Vast offer <= Vast ceiling
+AND
+No Runpod GPU <= Runpod ceiling
+    ->
+fail closed
+```
+
+Do not silently start an over-ceiling GPU.
+
+Instance-creation race should be handled as a second layer:
+if the selected Vast offer disappears before creation, rerun the router or
+fall back to the already-inspected Runpod candidate.
 
 ```
