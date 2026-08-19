@@ -1,0 +1,54 @@
+name: Release Gate
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Image tag to evaluate
+        required: true
+      predictions_rel:
+        description: Candidate predictions in HF Bucket
+        required: true
+      references_rel:
+        description: Golden references in HF Bucket
+        required: true
+        default: datasets/golden.parquet
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    environment: release
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve image tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "IMAGE_TAG=${{ inputs.image_tag }}" >> "$GITHUB_ENV"
+            echo "PREDICTIONS_REL=${{ inputs.predictions_rel }}" >> "$GITHUB_ENV"
+            echo "REFERENCES_REL=${{ inputs.references_rel }}" >> "$GITHUB_ENV"
+          else
+            echo "IMAGE_TAG=sha-${GITHUB_SHA}" >> "$GITHUB_ENV"
+            echo "PREDICTIONS_REL=results/release/${GITHUB_SHA}/candidate.parquet" >> "$GITHUB_ENV"
+            echo "REFERENCES_REL=datasets/golden.parquet" >> "$GITHUB_ENV"
+          fi
+
+      - name: Submit deterministic HF evaluation
+        env:
+          EVAL_IMAGE: ghcr.io/${{ github.repository_owner }}/audio-editorial-eval:${{ env.IMAGE_TAG }}
+          OUTPUT_REL: results/release/${{ github.sha }}/metrics.json
+        run: bash infra/hf/run_eval_job.sh
+
+      - name: Release notes
+        run: |
+          echo "Release evaluation submitted to HF Jobs." >> "$GITHUB_STEP_SUMMARY"

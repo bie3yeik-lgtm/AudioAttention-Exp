@@ -1,0 +1,27 @@
+name: Provider A/B Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Step-Audio image tag
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  runpod:
+    uses: ./.github/workflows/reusable-provider-smoke.yml
+    with:
+      provider: runpod
+      image_tag: ${{ inputs.image_tag }}
+    secrets: inherit
+
+  vast:
+    uses: ./.github/workflows/reusable-provider-smoke.yml
+    with:
+      provider: vast
+      image_tag: ${{ inputs.image_tag }}
+    secrets: inherit

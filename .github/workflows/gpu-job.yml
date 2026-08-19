@@ -1,0 +1,169 @@
+name: GPU Job
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: GPU provider
+        type: choice
+        required: true
+        options:
+          - runpod
+          - vast
+      job_kind:
+        description: Job to execute
+        type: choice
+        required: true
+        options:
+          - smoke
+          - teacher
+          - context-train
+          - editorial-train
+      image_kind:
+        description: GHCR image family
+        type: choice
+        required: true
+        options:
+          - stepaudio
+          - train
+      image_tag:
+        description: Immutable image tag; normally sha-<40-char-git-sha>
+        required: true
+      audio_rel:
+        description: HF Bucket relative audio path for teacher
+        required: false
+        default: ""
+      segments_rel:
+        description: HF Bucket relative ASR segments path for teacher
+        required: false
+        default: ""
+      train_rel:
+        description: HF Bucket train.parquet relative path
+        required: false
+        default: ""
+      valid_rel:
+        description: HF Bucket validation.parquet relative path
+        required: false
+        default: ""
+      epochs:
+        description: Training epochs
+        required: false
+        default: "10"
+      interruptible:
+        description: Allow interruptible/spot capacity where supported
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: gpu-${{ inputs.provider }}-${{ inputs.job_kind }}
+  cancel-in-progress: false
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: gpu-${{ inputs.provider }}
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+      HF_ROOT: /mnt/hf
+      HF_HOME: /workspace/cache/huggingface
+      NEMO_CACHE_DIR: /workspace/cache/nemo
+      TORCH_HOME: /workspace/cache/torch
+
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      RUNPOD_REGISTRY_AUTH_ID: ${{ vars.RUNPOD_REGISTRY_AUTH_ID }}
+      RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE || 'SECURE' }}
+
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      VAST_GPU_QUERY: ${{ vars.VAST_GPU_QUERY || 'gpu_ram>=48000 num_gpus=1 reliability>0.98 verified=true rentable=true' }}
+      VAST_DISK_GB: ${{ vars.VAST_DISK_GB || '150' }}
+
+      JOB_KIND: ${{ inputs.job_kind }}
+      RUN_ID: ${{ inputs.provider }}-${{ github.run_id }}-${{ github.run_attempt }}
+      GIT_SHA: ${{ github.sha }}
+      AUDIO_REL: ${{ inputs.audio_rel }}
+      SEGMENTS_REL: ${{ inputs.segments_rel }}
+      TRAIN_REL: ${{ inputs.train_rel }}
+      VALID_REL: ${{ inputs.valid_rel }}
+      EPOCHS: ${{ inputs.epochs }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compose immutable image reference
+        run: |
+          IMAGE_REF="ghcr.io/${GITHUB_REPOSITORY_OWNER}/audio-editorial-${{ inputs.image_kind }}:${{ inputs.image_tag }}"
+          IMAGE_REF="${IMAGE_REF,,}"
+          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
+
+      - name: Validate required inputs
+        run: |
+          case "$JOB_KIND" in
+            teacher)
+              test -n "$AUDIO_REL"
+              test -n "$SEGMENTS_REL"
+              ;;
+            context-train|editorial-train)
+              test -n "$TRAIN_REL"
+              test -n "$VALID_REL"
+              ;;
+          esac
+
+      - name: Launch Runpod
+        if: inputs.provider == 'runpod'
+        id: runpod
+        env:
+          INTERRUPTIBLE: ${{ inputs.interruptible }}
+        run: |
+          args=(
+            --image "$IMAGE_REF"
+            --name "audio-editorial-${JOB_KIND}-${RUN_ID}"
+            --cloud-type "$RUNPOD_CLOUD_TYPE"
+            --gpu "NVIDIA RTX A6000"
+            --gpu "NVIDIA A40"
+            --gpu "NVIDIA L40S"
+          )
+
+          if [ "$INTERRUPTIBLE" = "true" ]; then
+            args+=(--interruptible)
+          fi
+
+          if [ -n "${RUNPOD_REGISTRY_AUTH_ID:-}" ]; then
+            args+=(--registry-auth-id "$RUNPOD_REGISTRY_AUTH_ID")
+          fi
+
+          pod_id="$(python infra/runpod/create_job.py "${args[@]}")"
+          echo "pod_id=$pod_id" >> "$GITHUB_OUTPUT"
+          echo "Runpod pod: $pod_id"
+
+      - name: Launch Vast
+        if: inputs.provider == 'vast'
+        id: vast
+        run: |
+          instance_id="$(bash infra/vast/create_job.sh)"
+          echo "instance_id=$instance_id" >> "$GITHUB_OUTPUT"
+          echo "Vast instance: $instance_id"
+
+      - name: Write launch summary
+        run: |
+          {
+            echo "## GPU Job launched"
+            echo ""
+            echo "- Provider: \`${{ inputs.provider }}\`"
+            echo "- Job: \`${JOB_KIND}\`"
+            echo "- Run ID: \`${RUN_ID}\`"
+            echo "- Image: \`${IMAGE_REF}\`"
+            echo "- HF result root: \`hf://buckets/${HF_BUCKET}/runs/${RUN_ID}/\`"
+            if [ "${{ inputs.provider }}" = "runpod" ]; then
+              echo "- Runpod Pod ID: \`${{ steps.runpod.outputs.pod_id }}\`"
+            else
+              echo "- Vast Instance ID: \`${{ steps.vast.outputs.instance_id }}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

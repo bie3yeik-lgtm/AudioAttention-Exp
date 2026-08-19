@@ -1,0 +1,58 @@
+name: HF Golden Evaluation
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: eval image tag, normally sha-<git-sha>
+        required: true
+      predictions_rel:
+        description: HF Bucket relative predictions parquet
+        required: true
+      references_rel:
+        description: HF Bucket relative golden/reference parquet
+        required: true
+        default: datasets/golden.parquet
+      output_rel:
+        description: HF Bucket relative output metrics JSON
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hf-eval-${{ inputs.predictions_rel }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    environment: hf-evaluation
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+      PREDICTIONS_REL: ${{ inputs.predictions_rel }}
+      REFERENCES_REL: ${{ inputs.references_rel }}
+      OUTPUT_REL: ${{ inputs.output_rel }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build eval image reference
+        run: |
+          EVAL_IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER}/audio-editorial-eval:${{ inputs.image_tag }}"
+          EVAL_IMAGE="${EVAL_IMAGE,,}"
+          echo "EVAL_IMAGE=$EVAL_IMAGE" >> "$GITHUB_ENV"
+
+      - name: Run Hugging Face Job
+        run: bash infra/hf/run_eval_job.sh
+
+      - name: Summary
+        run: |
+          {
+            echo "## HF evaluation submitted"
+            echo "- Predictions: \`${PREDICTIONS_REL}\`"
+            echo "- References: \`${REFERENCES_REL}\`"
+            echo "- Output: \`hf://buckets/${HF_BUCKET}/${OUTPUT_REL}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

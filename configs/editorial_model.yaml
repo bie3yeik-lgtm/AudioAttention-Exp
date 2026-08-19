@@ -1,0 +1,19 @@
+model:
+  hidden_dim: 512
+  dropout: 0.1
+
+training:
+  batch_size: 64
+  epochs: 10
+  learning_rate: 0.0003
+
+classes:
+  - KEEP
+  - OPTIONAL
+  - CUT
+
+label_weights:
+  human_verified: 1.0
+  timeline_derived: 0.9
+  teacher_stepaudio: 0.5
+  automatic: 0.2

@@ -1,0 +1,63 @@
+name: Reusable Provider Smoke
+
+on:
+  workflow_call:
+    inputs:
+      provider:
+        type: string
+        required: true
+      image_tag:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    environment: gpu-${{ inputs.provider }}
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_BUCKET: ${{ vars.HF_BUCKET }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      RUNPOD_REGISTRY_AUTH_ID: ${{ vars.RUNPOD_REGISTRY_AUTH_ID }}
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      VAST_GPU_QUERY: ${{ vars.VAST_GPU_QUERY || 'gpu_ram>=48000 num_gpus=1 reliability>0.98 verified=true rentable=true' }}
+      JOB_KIND: smoke
+      RUN_ID: smoke-${{ inputs.provider }}-${{ github.run_id }}-${{ github.run_attempt }}
+      GIT_SHA: ${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Image ref
+        run: |
+          IMAGE_REF="ghcr.io/${GITHUB_REPOSITORY_OWNER}/audio-editorial-stepaudio:${{ inputs.image_tag }}"
+          IMAGE_REF="${IMAGE_REF,,}"
+          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
+
+      - name: Runpod launch
+        if: inputs.provider == 'runpod'
+        run: |
+          args=(
+            --image "$IMAGE_REF"
+            --name "$RUN_ID"
+            --gpu "NVIDIA RTX A6000"
+            --gpu "NVIDIA A40"
+            --gpu "NVIDIA L40S"
+          )
+          if [ -n "${RUNPOD_REGISTRY_AUTH_ID:-}" ]; then
+            args+=(--registry-auth-id "$RUNPOD_REGISTRY_AUTH_ID")
+          fi
+          python infra/runpod/create_job.py "${args[@]}"
+
+      - name: Vast launch
+        if: inputs.provider == 'vast'
+        run: bash infra/vast/create_job.sh
+
+      - name: Summary
+        run: |
+          echo "Smoke output will be written to hf://buckets/${HF_BUCKET}/runs/${RUN_ID}/" >> "$GITHUB_STEP_SUMMARY"

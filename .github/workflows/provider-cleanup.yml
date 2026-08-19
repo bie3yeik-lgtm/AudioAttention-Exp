@@ -1,0 +1,41 @@
+name: Provider Cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        type: choice
+        required: true
+        options:
+          - runpod
+          - vast
+      resource_id:
+        description: Runpod Pod ID or Vast Instance ID
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cleanup-${{ inputs.provider }}-${{ inputs.resource_id }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    environment: gpu-${{ inputs.provider }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Delete Runpod Pod
+        if: inputs.provider == 'runpod'
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: python infra/runpod/delete_job.py "${{ inputs.resource_id }}"
+
+      - name: Destroy Vast Instance
+        if: inputs.provider == 'vast'
+        env:
+          VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+        run: bash infra/vast/destroy_job.sh "${{ inputs.resource_id }}"
