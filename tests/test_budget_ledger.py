@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "infra" / "budget_ledger"))
 
 from core import check_limits, forecast_aware_pacing_checks, pacing_checks, period_keys, reservation_state, usage_for_period
-from forecast import weekday_factors
+from forecast import scheduled_cost_usd, weekday_factors
 
 
 def reservation(job_id, amount, periods, workload="teacher", created="2026-08-20T00:00:00+00:00"):
@@ -215,3 +215,19 @@ def test_forecast_disabled_falls_back_to_equal_remaining_days():
         schedule={"dates": {}},
     )
     assert checks[0]["daily_allowance_usd"] == 1.0
+
+
+
+def test_zero_demand_days_are_included_in_weekday_history():
+    from forecast import historical_daily_demand
+    now = datetime(2026, 8, 20, 0, 0, tzinfo=timezone.utc)
+    demand = historical_daily_demand([], scope="global", now=now, tz_name="Asia/Tokyo", lookback_days=14)
+    assert len(demand) == 14
+    assert all(v == 0.0 for v in demand.values())
+
+
+def test_scheduled_jobs_count_contributes_to_cost():
+    from datetime import date
+    schedule = {"dates": {"2026-08-25": {"teacher": {"jobs": 3}}}}
+    cost = scheduled_cost_usd(schedule, day=date(2026, 8, 25), scope="workload:teacher", fallback_cost_per_unit_usd={"teacher": 0.4}, fallback_cost_per_job_usd={"teacher": 0.5})
+    assert cost == 1.5

@@ -94,6 +94,7 @@ def resolved_forecast(cfg: dict[str, Any]) -> dict[str, Any]:
     envs = source.get("env_overrides", {})
     weights = source.get("weights", {})
     fallback = source.get("fallback_cost_per_unit_usd", {})
+    fallback_job = source.get("fallback_cost_per_job_usd", {})
 
     schedule_file = os.environ.get(
         envs.get("schedule_file", ""),
@@ -129,8 +130,13 @@ def resolved_forecast(cfg: dict[str, Any]) -> dict[str, Any]:
         "min_day_weight": float(source.get("min_day_weight", 0.25)),
         "max_day_weight": float(source.get("max_day_weight", 4.0)),
         "schedule_file": schedule_file,
+        "sources_file": source.get("sources_file", "configs/forecast-sources.yaml"),
         "fallback_cost_per_unit_usd": {
             "teacher": float(fallback.get("teacher", 0.40)),
             "student": float(fallback.get("student", 0.25)),
+        },
+        "fallback_cost_per_job_usd": {
+            "teacher": float(fallback_job.get("teacher", 0.40)),
+            "student": float(fallback_job.get("student", 0.25)),
         },
     }

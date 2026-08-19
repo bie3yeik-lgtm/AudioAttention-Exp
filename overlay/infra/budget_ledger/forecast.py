@@ -26,6 +26,7 @@ def scheduled_cost_usd(
     day: date,
     scope: str,
     fallback_cost_per_unit_usd: dict[str, float],
+    fallback_cost_per_job_usd: dict[str, float] | None = None,
 ) -> float:
     row = (schedule.get("dates") or {}).get(day.isoformat()) or {}
 
@@ -34,10 +35,10 @@ def scheduled_cost_usd(
         if item.get("expected_cost_usd") is not None:
             return max(0.0, float(item["expected_cost_usd"]))
         units = float(item.get("units", 0.0) or 0.0)
-        return max(
-            0.0,
-            units * float(fallback_cost_per_unit_usd.get(workload, 0.0)),
-        )
+        jobs = float(item.get("jobs", 0.0) or 0.0)
+        unit_cost = units * float(fallback_cost_per_unit_usd.get(workload, 0.0))
+        job_cost = jobs * float((fallback_cost_per_job_usd or {}).get(workload, 0.0))
+        return max(0.0, unit_cost + job_cost)
 
     if scope == "global":
         return workload_cost("teacher") + workload_cost("student")
@@ -58,6 +59,12 @@ def historical_daily_demand(
     local_now = now.astimezone(ZoneInfo(tz_name))
     start_day = local_now.date() - timedelta(days=lookback_days)
     out: dict[date, float] = defaultdict(float)
+
+    # Zero-demand calendar days are observations too.
+    d = start_day
+    while d < local_now.date():
+        out[d] += 0.0
+        d += timedelta(days=1)
 
     for state in reservation_state(events).values():
         reservation = state.get("reservation")
@@ -177,6 +184,9 @@ def remaining_day_weights(
             fallback_cost_per_unit_usd=forecast_cfg[
                 "fallback_cost_per_unit_usd"
             ],
+            fallback_cost_per_job_usd=forecast_cfg.get(
+                "fallback_cost_per_job_usd", {}
+            ),
         )
         for d in days
     }

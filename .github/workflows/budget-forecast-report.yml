@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   report:
@@ -43,6 +44,19 @@ jobs:
           python-version: "3.11"
 
       - run: pip install -r infra/budget_ledger/requirements.txt
+
+      - name: Build automatic demand forecast
+        env:
+          PYTHONPATH: infra/budget_ledger
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          forecast_file="$RUNNER_TEMP/budget-demand-forecast.generated.yaml"
+          python infra/budget_ledger/auto_forecast.py \
+            --bucket "$HF_BUCKET" \
+            --exclude-run-id '${{ github.run_id }}' \
+            --output "$forecast_file"
+          echo "GPU_BUDGET_FORECAST_FILE=$forecast_file" >> "$GITHUB_ENV"
 
       - name: Forecast-aware pacing report
         env:

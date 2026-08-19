@@ -50,10 +50,15 @@ forecast:
   # Planned Teacher/Student workload forecast.
   # Can be overridden with GPU_BUDGET_FORECAST_FILE.
   schedule_file: configs/budget-demand-forecast.yaml
+  sources_file: configs/forecast-sources.yaml
 
   # Used only when a schedule row provides `units` but not
   # `expected_cost_usd`.
   fallback_cost_per_unit_usd:
+    teacher: 0.40
+    student: 0.25
+
+  fallback_cost_per_job_usd:
     teacher: 0.40
     student: 0.25
 

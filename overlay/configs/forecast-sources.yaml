@@ -1,0 +1,34 @@
+version: 1
+horizon_days: 45
+
+actions:
+  enabled: true
+  statuses: [queued, requested, waiting, pending, in_progress]
+  per_page: 100
+  budgeted_run_name_prefix: "budgeted|"
+
+job_specs:
+  enabled: true
+  globs:
+    - "plans/jobs/**/*.json"
+    - "plans/jobs/**/*.yaml"
+    - "plans/jobs/**/*.yml"
+    - "job-specs/**/*.json"
+    - "job-specs/**/*.yaml"
+    - "job-specs/**/*.yml"
+  schedule_fields:
+    - "metadata.forecast.scheduled_at"
+    - "metadata.scheduled_at"
+    - "metadata.not_before"
+
+workflow_rules:
+  ".github/workflows/teacher-job.yml":
+    workload: teacher
+    units: 1.0
+    include_queued: true
+    include_schedule: true
+  ".github/workflows/student-job.yml":
+    workload: student
+    units: 1.0
+    include_queued: true
+    include_schedule: true
